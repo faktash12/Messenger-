@@ -16,6 +16,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -683,12 +684,29 @@ function AuthScreen({
   }) => Promise<void>;
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('register');
+  const [panelOpen, setPanelOpen] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [notice, setNotice] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [quote] = useState(() => quotes[Math.floor(Math.random() * quotes.length)]);
+
+  const openPanel = (nextMode: 'login' | 'register') => {
+    setMode(nextMode);
+    setPanelOpen(true);
+    setNotice('');
+  };
+
+  const shareQuote = async () => {
+    try {
+      await Share.share({
+        message: `${quote.text}\n[${quote.author}]`,
+      });
+    } catch {
+      setNotice('Paylaşım menüsü açılamadı.');
+    }
+  };
 
   const submit = async () => {
     const cleanEmail = email.trim().toLowerCase();
@@ -739,53 +757,65 @@ function AuthScreen({
           <Ionicons color={palette.accent} name="sparkles-outline" size={22} />
           <Text style={styles.quoteText}>{quote.text}</Text>
           <Text style={styles.quoteAuthor}>[{quote.author}]</Text>
+          <View style={styles.quoteActionRow}>
+            <IconActionButton accessibilityLabel="Özlü sözü paylaş" icon="share-social-outline" onPress={shareQuote} />
+            <IconActionButton
+              accessibilityLabel="Üye ol"
+              active={panelOpen && mode === 'register'}
+              icon="person-add-outline"
+              onPress={() => openPanel('register')}
+            />
+            <IconActionButton
+              accessibilityLabel="Giriş yap"
+              active={panelOpen && mode === 'login'}
+              icon="key-outline"
+              onPress={() => openPanel('login')}
+            />
+          </View>
         </View>
       </View>
 
-      <View style={styles.authCard}>
-        <View style={styles.modeSwitch}>
-          <SegmentButton active={mode === 'register'} icon="person-add-outline" label="Üye ol" onPress={() => setMode('register')} />
-          <SegmentButton active={mode === 'login'} icon="key-outline" label="Giriş yap" onPress={() => setMode('login')} />
-        </View>
+      {panelOpen ? (
+        <View style={styles.authCard}>
+          {mode === 'register' ? (
+            <LabeledInput
+              autoCapitalize="words"
+              icon="person-outline"
+              label="Ad soyad"
+              onChangeText={setName}
+              placeholder="Adın"
+              value={name}
+            />
+          ) : null}
 
-        {mode === 'register' ? (
           <LabeledInput
-            autoCapitalize="words"
-            icon="person-outline"
-            label="Ad soyad"
-            onChangeText={setName}
-            placeholder="Adın"
-            value={name}
+            autoCapitalize="none"
+            icon="mail-outline"
+            keyboardType="email-address"
+            label="E-posta"
+            onChangeText={setEmail}
+            placeholder="ornek@mail.com"
+            value={email}
           />
-        ) : null}
 
-        <LabeledInput
-          autoCapitalize="none"
-          icon="mail-outline"
-          keyboardType="email-address"
-          label="E-posta"
-          onChangeText={setEmail}
-          placeholder="ornek@mail.com"
-          value={email}
-        />
+          <LabeledInput
+            icon="lock-closed-outline"
+            label="Şifre"
+            onChangeText={setPassword}
+            placeholder="En az 6 karakter"
+            secureTextEntry
+            value={password}
+          />
 
-        <LabeledInput
-          icon="lock-closed-outline"
-          label="Şifre"
-          onChangeText={setPassword}
-          placeholder="En az 6 karakter"
-          secureTextEntry
-          value={password}
-        />
+          {notice ? <Text style={styles.notice}>{notice}</Text> : null}
 
-        {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-
-        <PrimaryButton
-          icon="arrow-forward"
-          label={submitting ? 'Bağlanıyor...' : mode === 'register' ? 'Hesap oluştur' : 'Giriş yap'}
-          onPress={submit}
-        />
-      </View>
+          <PrimaryButton
+            icon="arrow-forward"
+            label={submitting ? 'Bağlanıyor...' : mode === 'register' ? 'Hesap oluştur' : 'Giriş yap'}
+            onPress={submit}
+          />
+        </View>
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -1691,21 +1721,25 @@ function PrimaryButton({
   );
 }
 
-function SegmentButton({
+function IconActionButton({
   active,
+  accessibilityLabel,
   icon,
-  label,
   onPress,
 }: {
-  active: boolean;
+  active?: boolean;
+  accessibilityLabel: string;
   icon: keyof typeof Ionicons.glyphMap;
-  label: string;
   onPress: () => void;
 }) {
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={[styles.segmentButton, active && styles.segmentButtonActive]}>
-      <Ionicons color={active ? palette.ink : palette.muted} name={icon} size={17} />
-      <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.quoteActionButton, active && styles.quoteActionButtonActive, pressed && styles.pressed]}
+    >
+      <Ionicons color={active ? '#ffffff' : palette.accent} name={icon} size={22} />
     </Pressable>
   );
 }
@@ -1838,6 +1872,27 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     textAlign: 'center',
+  },
+  quoteActionRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    marginTop: 6,
+  },
+  quoteActionButton: {
+    alignItems: 'center',
+    backgroundColor: '#ecfdf7',
+    borderColor: '#b7e4d7',
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  quoteActionButtonActive: {
+    backgroundColor: palette.accent,
+    borderColor: palette.accent,
   },
   authCard: {
     backgroundColor: palette.panel,
