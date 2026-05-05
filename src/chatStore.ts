@@ -20,6 +20,22 @@ const usersPath = 'users';
 const ledgerPath = 'messageLedger';
 const thirtyDays = 30 * 24 * 60 * 60 * 1000;
 
+function withoutUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => withoutUndefined(item)) as T;
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entryValue]) => entryValue !== undefined)
+        .map(([key, entryValue]) => [key, withoutUndefined(entryValue)]),
+    ) as T;
+  }
+
+  return value;
+}
+
 export async function upsertUserProfile(firebaseUser: FirebaseUser, displayName?: string): Promise<User> {
   const user: User = {
     id: firebaseUser.uid,
@@ -29,7 +45,7 @@ export async function upsertUserProfile(firebaseUser: FirebaseUser, displayName?
     photoURL: firebaseUser.photoURL || undefined,
   };
 
-  await setDoc(doc(firestore, usersPath, user.id), user, { merge: true });
+  await setDoc(doc(firestore, usersPath, user.id), withoutUndefined(user), { merge: true });
   await seedInitialData(user.id);
   return user;
 }
@@ -42,16 +58,16 @@ export async function seedInitialData(userId: string) {
 
   const batch = writeBatch(firestore);
   initialFriends.forEach((friend) => {
-    batch.set(doc(firestore, usersPath, userId, 'friends', friend.id), friend);
+    batch.set(doc(firestore, usersPath, userId, 'friends', friend.id), withoutUndefined(friend));
   });
   initialConversations.forEach((conversation) => {
-    batch.set(doc(firestore, usersPath, userId, 'conversations', conversation.id), conversation);
+    batch.set(doc(firestore, usersPath, userId, 'conversations', conversation.id), withoutUndefined(conversation));
   });
   initialMessages.forEach((message) => {
-    batch.set(doc(firestore, usersPath, userId, 'messages', message.id), {
+    batch.set(doc(firestore, usersPath, userId, 'messages', message.id), withoutUndefined({
       ...message,
       senderId: message.senderId === 'me' ? userId : message.senderId,
-    });
+    }));
   });
 
   await batch.commit();
@@ -88,16 +104,17 @@ export function subscribeLedgerMessages(onChange: (messages: Message[]) => void)
 }
 
 export async function saveFriend(userId: string, friend: Friend) {
-  await setDoc(doc(firestore, usersPath, userId, 'friends', friend.id), friend, { merge: true });
+  await setDoc(doc(firestore, usersPath, userId, 'friends', friend.id), withoutUndefined(friend), { merge: true });
 }
 
 export async function saveConversation(userId: string, conversation: Conversation) {
-  await setDoc(doc(firestore, usersPath, userId, 'conversations', conversation.id), conversation, { merge: true });
+  await setDoc(doc(firestore, usersPath, userId, 'conversations', conversation.id), withoutUndefined(conversation), { merge: true });
 }
 
 export async function saveMessage(userId: string, message: Message) {
-  await setDoc(doc(firestore, usersPath, userId, 'messages', message.id), message, { merge: true });
-  await setDoc(doc(firestore, ledgerPath, message.id), message, { merge: true });
+  const cleanMessage = withoutUndefined(message);
+  await setDoc(doc(firestore, usersPath, userId, 'messages', message.id), cleanMessage, { merge: true });
+  await setDoc(doc(firestore, ledgerPath, message.id), cleanMessage, { merge: true });
 }
 
 export async function updateConversationRetention(userId: string, conversationId: string, retentionId: Conversation['retentionId']) {
@@ -118,7 +135,7 @@ export async function pruneExpiredMessages(userId: string, now: number) {
         hardDeleteAfter: now + thirtyDays,
       };
       batch.update(item.ref, patch);
-      batch.set(doc(firestore, ledgerPath, message.id), patch, { merge: true });
+      batch.set(doc(firestore, ledgerPath, message.id), withoutUndefined(patch), { merge: true });
       count += 1;
     }
   });
@@ -142,8 +159,8 @@ export async function softDeleteMessages(userId: string, messageIds: string[]) {
       deletedBy: userId,
       hardDeleteAfter: deletedAt + thirtyDays,
     };
-    batch.set(doc(firestore, usersPath, userId, 'messages', messageId), patch, { merge: true });
-    batch.set(doc(firestore, ledgerPath, messageId), patch, { merge: true });
+    batch.set(doc(firestore, usersPath, userId, 'messages', messageId), withoutUndefined(patch), { merge: true });
+    batch.set(doc(firestore, ledgerPath, messageId), withoutUndefined(patch), { merge: true });
   });
 
   await batch.commit();
@@ -218,7 +235,7 @@ export async function uploadAttachment(userId: string, conversationId: string, a
 }
 
 export async function updateUserProfile(userId: string, patch: Partial<User>) {
-  await setDoc(doc(firestore, usersPath, userId), patch, { merge: true });
+  await setDoc(doc(firestore, usersPath, userId), withoutUndefined(patch), { merge: true });
 }
 
 export async function uploadProfilePhoto(userId: string, attachment: Attachment) {
