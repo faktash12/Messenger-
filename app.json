@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "MessengerPlus",
-    "slug": "MessengerPlus",
+    "name": "Messenger+",
+    "slug": "messengerplus",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -16,6 +16,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.messengerplus.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"

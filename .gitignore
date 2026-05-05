@@ -5,6 +5,7 @@ node_modules/
 
 # Expo
 .expo/
+.cache/
 dist/
 web-build/
 expo-env.d.ts
@@ -25,6 +26,7 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+expo-web.log
 
 # macOS
 .DS_Store
@@ -38,4 +40,3 @@ yarn-error.*
 
 # generated native folders
 /ios
-/android
