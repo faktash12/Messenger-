@@ -7,6 +7,9 @@ export type User = {
   name: string;
   email: string;
   isPremium: boolean;
+  isAdmin?: boolean;
+  protectedAccount?: boolean;
+  authProvider?: 'firebase' | 'local-admin';
 };
 
 export type Friend = {

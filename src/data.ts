@@ -10,6 +10,21 @@ export const demoUser: User = {
   isPremium: true,
 };
 
+export const adminCredentials = {
+  email: 'faktash@yahoo.com',
+  password: 'faktas12',
+};
+
+export const adminUser: User = {
+  id: 'admin-faktash',
+  name: 'Faktash Admin',
+  email: adminCredentials.email,
+  isPremium: true,
+  isAdmin: true,
+  protectedAccount: true,
+  authProvider: 'local-admin',
+};
+
 export const directory: Friend[] = [
   {
     id: 'ece',

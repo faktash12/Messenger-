@@ -33,7 +33,7 @@ import {
   uploadAttachment,
   upsertUserProfile,
 } from './src/chatStore';
-import { demoUser, directory, initialConversations, initialFriends, initialMessages } from './src/data';
+import { adminCredentials, adminUser, demoUser, directory, initialConversations, initialFriends, initialMessages } from './src/data';
 import { auth } from './src/firebase';
 import { formatRemaining, getRetention, retentionOptions } from './src/retention';
 import type { Conversation, Friend, Message, RetentionId, TabId, User } from './src/types';
@@ -59,6 +59,28 @@ const tabs: Array<{ id: TabId; label: string; icon: keyof typeof Ionicons.glyphM
   { id: 'premium', label: 'Ultra', icon: 'diamond-outline' },
   { id: 'settings', label: 'Ayarlar', icon: 'shield-checkmark-outline' },
 ];
+
+function usesFirebase(user: User | null): user is User {
+  return Boolean(user && user.authProvider !== 'local-admin');
+}
+
+function getAuthErrorMessage(error: unknown) {
+  const rawMessage = error instanceof Error ? error.message : 'Firebase oturumu açılamadı.';
+
+  if (rawMessage.includes('auth/operation-not-allowed')) {
+    return 'Firebase Email/Password kapalı. Firebase Console > Authentication > Sign-in method > Email/Password sağlayıcısını etkinleştir.';
+  }
+
+  if (rawMessage.includes('auth/invalid-credential') || rawMessage.includes('auth/wrong-password')) {
+    return 'E-posta veya şifre hatalı.';
+  }
+
+  if (rawMessage.includes('auth/email-already-in-use')) {
+    return 'Bu e-posta ile zaten bir hesap var. Giriş yap sekmesini kullan.';
+  }
+
+  return rawMessage.replace('Firebase: ', '');
+}
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -86,7 +108,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!user) {
+    if (!usesFirebase(user)) {
       return undefined;
     }
 
@@ -111,7 +133,7 @@ export default function App() {
       const tick = Date.now();
       setNow(tick);
       setMessages((current) => current.filter((message) => message.expiresAt > tick));
-      if (user) {
+      if (usesFirebase(user)) {
         pruneExpiredMessages(user.id, tick).catch(() => undefined);
       }
     }, 5000);
@@ -135,6 +157,21 @@ export default function App() {
     name: string;
     password: string;
   }) => {
+    if (cleanEmail === adminCredentials.email && password === adminCredentials.password) {
+      setUser(adminUser);
+      setFriends(initialFriends);
+      setConversations(initialConversations);
+      setMessages(
+        initialMessages.map((message) => ({
+          ...message,
+          senderId: message.senderId === 'me' ? adminUser.id : message.senderId,
+        })),
+      );
+      setSelectedConversationId(initialConversations[0].id);
+      setActiveTab('chats');
+      return;
+    }
+
     const credential =
       mode === 'register'
         ? await createUserWithEmailAndPassword(auth, cleanEmail, password)
@@ -202,8 +239,10 @@ export default function App() {
 
     setFriends((current) => [...current, newFriend]);
     setConversations((current) => [...current, newConversation]);
-    saveFriend(user.id, newFriend).catch(() => undefined);
-    saveConversation(user.id, newConversation).catch(() => undefined);
+    if (usesFirebase(user)) {
+      saveFriend(user.id, newFriend).catch(() => undefined);
+      saveConversation(user.id, newConversation).catch(() => undefined);
+    }
     setSelectedConversationId(newConversation.id);
     setActiveTab('chats');
     return `${newFriend.name} arkadaş olarak eklendi.`;
@@ -228,7 +267,9 @@ export default function App() {
     };
 
     setMessages((current) => [...current, nextMessage]);
-    saveMessage(user.id, nextMessage).catch(() => undefined);
+    if (usesFirebase(user)) {
+      saveMessage(user.id, nextMessage).catch(() => undefined);
+    }
   };
 
   const sendFile = async (conversationId: string) => {
@@ -267,11 +308,13 @@ export default function App() {
 
     setMessages((current) => [...current, nextMessage]);
 
-    try {
-      const uploadedAttachment = await uploadAttachment(user.id, conversationId, localAttachment);
-      await saveMessage(user.id, { ...nextMessage, attachment: uploadedAttachment });
-    } catch {
-      await saveMessage(user.id, nextMessage);
+    if (usesFirebase(user)) {
+      try {
+        const uploadedAttachment = await uploadAttachment(user.id, conversationId, localAttachment);
+        await saveMessage(user.id, { ...nextMessage, attachment: uploadedAttachment });
+      } catch {
+        await saveMessage(user.id, nextMessage);
+      }
     }
   };
 
@@ -284,7 +327,9 @@ export default function App() {
         conversation.id === conversationId ? { ...conversation, retentionId } : conversation,
       ),
     );
-    updateConversationRetention(user.id, conversationId, retentionId).catch(() => undefined);
+    if (usesFirebase(user)) {
+      updateConversationRetention(user.id, conversationId, retentionId).catch(() => undefined);
+    }
 
     setMessages((current) =>
       current.map((message) => {
@@ -292,7 +337,7 @@ export default function App() {
           message.conversationId === conversationId
             ? { ...message, expiresAt: changedAt + retention.milliseconds }
             : message;
-        if (nextMessage !== message) {
+        if (nextMessage !== message && usesFirebase(user)) {
           saveMessage(user.id, nextMessage).catch(() => undefined);
         }
         return nextMessage;
@@ -316,7 +361,13 @@ export default function App() {
         onActivatePremium={activatePremium}
         onAddFriend={addFriend}
         onChangeRetention={updateRetention}
-        onLogout={() => signOut(auth)}
+        onLogout={() => {
+          if (usesFirebase(user)) {
+            signOut(auth);
+          } else {
+            setUser(null);
+          }
+        }}
         onSelectConversation={(conversationId) => {
           setSelectedConversationId(conversationId);
           setActiveTab('chats');
@@ -378,8 +429,7 @@ function AuthScreen({
         password,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Firebase oturumu açılamadı.';
-      setNotice(message.replace('Firebase: ', ''));
+      setNotice(getAuthErrorMessage(error));
     } finally {
       setSubmitting(false);
     }
@@ -442,14 +492,14 @@ function AuthScreen({
           accessibilityRole="button"
           onPress={() => {
             setMode('login');
-            setEmail(demoUser.email);
-            setPassword('Messenger123');
-            setNotice('Demo için Firebase Auth üzerinde demo@messenger.plus / Messenger123 hesabı gerekir.');
+            setEmail(adminCredentials.email);
+            setPassword(adminCredentials.password);
+            setNotice('Korumalı admin hesabı hazır: faktash@yahoo.com / faktas12');
           }}
           style={({ pressed }) => [styles.demoButton, pressed && styles.pressed]}
         >
           <Ionicons color={palette.accent} name="flash-outline" size={18} />
-          <Text style={styles.demoButtonText}>Demo Ultra hesaba gir</Text>
+          <Text style={styles.demoButtonText}>Admin bilgilerini doldur</Text>
         </Pressable>
       </View>
     </KeyboardAvoidingView>
@@ -923,6 +973,7 @@ function SettingsView({ onLogout, user }: { onLogout: () => void; user: User }) 
       <View style={styles.settingsPanel}>
         <SettingsRow icon="mail-outline" label="E-posta" value={user.email} />
         <SettingsRow icon="diamond-outline" label="Plan" value={user.isPremium ? 'Ultra Premium' : 'Standart'} />
+        <SettingsRow icon="shield-checkmark-outline" label="Yetki" value={user.isAdmin ? 'Silinemez admin' : 'Kullanıcı'} />
         <SettingsRow icon="timer-outline" label="Varsayılan süre" value={user.isPremium ? '1 gün' : '10 dakika'} />
         <Pressable accessibilityRole="button" onPress={onLogout} style={({ pressed }) => [styles.dangerButton, pressed && styles.pressed]}>
           <Ionicons color="#b42318" name="log-out-outline" size={19} />
