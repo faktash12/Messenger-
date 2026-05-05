@@ -168,10 +168,20 @@ export default function App() {
     return () => clearInterval(timer);
   }, [user]);
 
-  const visibleMessages = useMemo(
-    () => messages.filter((message) => message.expiresAt > now && !message.deletedAt),
-    [messages, now],
-  );
+  const accessibleConversations = useMemo(() => {
+    const friendIds = new Set(friends.map((friend) => friend.id));
+    return conversations.filter((conversation) => friendIds.has(conversation.friendId));
+  }, [conversations, friends]);
+
+  const visibleMessages = useMemo(() => {
+    const allowedConversationIds = new Set(accessibleConversations.map((conversation) => conversation.id));
+    return messages.filter(
+      (message) =>
+        message.expiresAt > now &&
+        !message.deletedAt &&
+        (user?.isAdmin || allowedConversationIds.has(message.conversationId)),
+    );
+  }, [accessibleConversations, messages, now, user?.isAdmin]);
 
   const authenticate = async ({
     cleanEmail,
@@ -254,9 +264,21 @@ export default function App() {
     const existing = friends.find((friend) => friend.email.toLowerCase() === cleanEmail);
 
     if (existing) {
-      const existingConversationId = conversations.find((conversation) => conversation.friendId === existing.id)?.id ?? `chat-${existing.id}`;
-      setSelectedConversationId(existingConversationId);
-      setOpenConversationId(existingConversationId);
+      const existingConversation = conversations.find((conversation) => conversation.friendId === existing.id);
+      const conversation =
+        existingConversation ?? {
+          id: `chat-${existing.id}`,
+          friendId: existing.id,
+          retentionId: user.isPremium ? '1d' : '10m',
+        };
+      if (!existingConversation) {
+        setConversations((current) => [...current, conversation]);
+        if (usesFirebase(user)) {
+          saveConversation(user.id, conversation).catch(() => undefined);
+        }
+      }
+      setSelectedConversationId(conversation.id);
+      setOpenConversationId(conversation.id);
       setActiveTab('chats');
       return 'Bu kişi zaten arkadaş listende.';
     }
@@ -484,12 +506,37 @@ export default function App() {
     setUser((current) => (current ? { ...current, isPremium: true } : current));
   };
 
+  const updateAdminUser = async (userId: string, patch: Partial<User>) => {
+    setAllUsers((current) => current.map((item) => (item.id === userId ? { ...item, ...patch } : item)));
+    if (usesFirebase(user)) {
+      await updateUserProfile(userId, patch).catch(() => undefined);
+    }
+  };
+
+  const deleteAdminUser = async (targetUser: User) => {
+    if (targetUser.protectedAccount || targetUser.email === adminCredentials.email) {
+      return 'Admin hesabı silinemez.';
+    }
+
+    setAllUsers((current) => current.filter((item) => item.id !== targetUser.id));
+    setFriends((current) => current.filter((friend) => friend.userId !== targetUser.id && friend.id !== targetUser.id));
+    setConversations((current) => current.filter((conversation) => conversation.friendId !== targetUser.id));
+    setMessages((current) =>
+      current.filter((message) => message.senderId !== targetUser.id && message.receiverId !== targetUser.id),
+    );
+    setLedgerMessages((current) =>
+      current.filter((message) => message.senderId !== targetUser.id && message.receiverId !== targetUser.id),
+    );
+
+    return `${targetUser.name} kullanıcı listesinden kaldırıldı.`;
+  };
+
   return (
     <>
       <StatusBar style="dark" />
       <AppShell
         activeTab={activeTab}
-        conversations={conversations}
+        conversations={accessibleConversations}
         friends={friends}
         messages={visibleMessages}
         now={now}
@@ -497,6 +544,7 @@ export default function App() {
         onAddFriend={addFriend}
         onChangeRetention={updateRetention}
         onDeleteMessages={deleteSelectedMessages}
+        onDeleteAdminUser={deleteAdminUser}
         onLogout={() => {
           if (usesFirebase(user)) {
             signOut(auth);
@@ -518,6 +566,7 @@ export default function App() {
           }
         }}
         onPurgeDeleted={purgeDeleted}
+        onUpdateAdminUser={updateAdminUser}
         onUpdateProfilePhoto={updateProfilePhoto}
         openConversationId={openConversationId}
         onCloseConversation={() => setOpenConversationId(null)}
@@ -653,6 +702,7 @@ function AppShell({
   onAddFriend,
   onChangeRetention,
   onDeleteMessages,
+  onDeleteAdminUser,
   onLogout,
   onCloseConversation,
   onPurgeDeleted,
@@ -661,6 +711,7 @@ function AppShell({
   onSendMessage,
   onSetTab,
   onUpdateProfilePhoto,
+  onUpdateAdminUser,
   openConversationId,
   selectedConversationId,
   user,
@@ -676,6 +727,7 @@ function AppShell({
   onAddFriend: (email: string) => string;
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
   onDeleteMessages: (messageIds: string[]) => Promise<void>;
+  onDeleteAdminUser: (targetUser: User) => Promise<string>;
   onLogout: () => void;
   onCloseConversation: () => void;
   onPurgeDeleted: () => Promise<number>;
@@ -683,6 +735,7 @@ function AppShell({
   onSendFile: (conversationId: string) => Promise<void>;
   onSendMessage: (conversationId: string, text: string) => void;
   onSetTab: (tab: TabId) => void;
+  onUpdateAdminUser: (userId: string, patch: Partial<User>) => Promise<void>;
   onUpdateProfilePhoto: () => Promise<void>;
   openConversationId: string | null;
   selectedConversationId: string;
@@ -753,7 +806,13 @@ function AppShell({
           />
         ) : null}
         {activeTab === 'admin' ? (
-          <AdminView allUsers={allUsers} messages={ledgerMessages} onPurgeDeleted={onPurgeDeleted} />
+          <AdminView
+            allUsers={allUsers}
+            messages={ledgerMessages}
+            onDeleteUser={onDeleteAdminUser}
+            onPurgeDeleted={onPurgeDeleted}
+            onUpdateUser={onUpdateAdminUser}
+          />
         ) : null}
         {activeTab === 'premium' ? <PremiumView onActivatePremium={onActivatePremium} user={user} /> : null}
         {activeTab === 'settings' ? <SettingsView onLogout={onLogout} onUpdateProfilePhoto={onUpdateProfilePhoto} user={user} /> : null}
@@ -809,10 +868,11 @@ function ChatsView({
   onSendFile: (conversationId: string) => Promise<void>;
   onSendMessage: (conversationId: string, text: string) => void;
   openConversationId: string | null;
-  selectedConversation: Conversation;
+  selectedConversation?: Conversation;
   user: User;
 }) {
-  const showChat = Boolean(openConversationId);
+  const showChat = Boolean(openConversationId && selectedConversation);
+  const activeConversation = showChat ? selectedConversation : undefined;
 
   return (
     <View style={[styles.chatLayout, !isWide && styles.chatLayoutMobile]}>
@@ -823,14 +883,14 @@ function ChatsView({
           messages={messages}
           now={now}
           onSelectConversation={onSelectConversation}
-          selectedConversationId={selectedConversation.id}
+          selectedConversationId={selectedConversation?.id ?? ''}
         />
       ) : null}
-      {showChat ? (
+      {activeConversation ? (
         <ChatPanel
-          conversation={selectedConversation}
-          friend={friends.find((friend) => friend.id === selectedConversation.friendId)}
-          messages={messages.filter((message) => message.conversationId === selectedConversation.id)}
+          conversation={activeConversation}
+          friend={friends.find((friend) => friend.id === activeConversation.friendId)}
+          messages={messages.filter((message) => message.conversationId === activeConversation.id)}
           now={now}
           onBack={onCloseConversation}
           onChangeRetention={onChangeRetention}
@@ -867,6 +927,13 @@ function ConversationList({
       </View>
 
       <ScrollView contentContainerStyle={styles.listStack} showsVerticalScrollIndicator={false}>
+        {conversations.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Ionicons color={palette.accent} name="people-outline" size={34} />
+            <Text style={styles.emptyTitle}>Henüz arkadaş sohbeti yok</Text>
+            <Text style={styles.emptyText}>Arkadaşlar sekmesinden kişi ekleyince sohbet burada görünür.</Text>
+          </View>
+        ) : null}
         {conversations.map((conversation) => {
           const friend = friends.find((item) => item.id === conversation.friendId);
           const lastMessage = messages
@@ -1129,17 +1196,30 @@ function FriendsView({
                   <Text style={styles.rowTitle}>{item.name}</Text>
                   <Text style={styles.rowMessage}>{item.email}</Text>
                 </View>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setNotice(onAddFriend(item.email));
-                    setQuery('');
-                  }}
-                  style={({ pressed }) => [styles.smallAction, pressed && styles.pressed]}
-                >
-                  <Ionicons color={palette.accent} name="person-add-outline" size={17} />
-                  <Text style={styles.smallActionText}>Ekle</Text>
-                </Pressable>
+                <View style={styles.searchActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setNotice(onAddFriend(item.email));
+                      setQuery('');
+                    }}
+                    style={({ pressed }) => [styles.smallAction, pressed && styles.pressed]}
+                  >
+                    <Ionicons color={palette.accent} name="person-add-outline" size={17} />
+                    <Text style={styles.smallActionText}>Ekle</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setQuery('');
+                      setNotice('Arama geri alındı.');
+                    }}
+                    style={({ pressed }) => [styles.outlineAction, pressed && styles.pressed]}
+                  >
+                    <Ionicons color={palette.muted} name="arrow-undo-outline" size={17} />
+                    <Text style={styles.outlineActionText}>Geri al</Text>
+                  </Pressable>
+                </View>
               </View>
             ))}
         </View>
@@ -1181,14 +1261,21 @@ function FriendsView({
 function AdminView({
   allUsers,
   messages,
+  onDeleteUser,
   onPurgeDeleted,
+  onUpdateUser,
 }: {
   allUsers: User[];
   messages: Message[];
+  onDeleteUser: (targetUser: User) => Promise<string>;
   onPurgeDeleted: () => Promise<number>;
+  onUpdateUser: (userId: string, patch: Partial<User>) => Promise<void>;
 }) {
   const [leftUserId, setLeftUserId] = useState(allUsers[0]?.id ?? adminUser.id);
   const [rightUserId, setRightUserId] = useState(allUsers[1]?.id ?? 'ece');
+  const [adminAction, setAdminAction] = useState<'details' | 'edit' | 'history'>('details');
+  const [editName, setEditName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
   const [notice, setNotice] = useState('');
 
   const leftUser = allUsers.find((item) => item.id === leftUserId);
@@ -1206,9 +1293,42 @@ function AdminView({
     })
     .sort((a, b) => a.createdAt - b.createdAt);
 
+  useEffect(() => {
+    if (!leftUser && allUsers[0]) {
+      setLeftUserId(allUsers[0].id);
+      return;
+    }
+
+    setEditName(leftUser?.name ?? '');
+    setEditEmail(leftUser?.email ?? '');
+  }, [allUsers, leftUser]);
+
   const purge = async () => {
     const count = await onPurgeDeleted();
     setNotice(`${count} silinmiş mesaj kalıcı olarak temizlendi.`);
+  };
+
+  const saveUser = async () => {
+    if (!leftUser) {
+      return;
+    }
+
+    await onUpdateUser(leftUser.id, {
+      email: editEmail.trim().toLowerCase(),
+      name: editName.trim() || leftUser.name,
+    });
+    setNotice(`${leftUser.name} güncellendi.`);
+    setAdminAction('details');
+  };
+
+  const deleteUser = async () => {
+    if (!leftUser) {
+      return;
+    }
+
+    const message = await onDeleteUser(leftUser);
+    setNotice(message);
+    setAdminAction('details');
   };
 
   return (
@@ -1238,7 +1358,11 @@ function AdminView({
             <Pressable
               accessibilityRole="button"
               key={item.id}
-              onPress={() => setLeftUserId(item.id)}
+              onPress={() => {
+                setLeftUserId(item.id);
+                setAdminAction('details');
+                setNotice('');
+              }}
               style={[styles.conversationRow, leftUserId === item.id && styles.conversationRowActive]}
             >
               <Avatar color={palette.blue} label={item.name} premium={item.isPremium} photoURL={item.photoURL} />
@@ -1253,7 +1377,7 @@ function AdminView({
 
       <View style={styles.adminMessagesPane}>
         <View style={styles.adminPairHeader}>
-          <Text style={styles.chatTitle}>{leftUser?.name ?? 'A kullanıcısı'} {'->'} {rightUser?.name ?? 'B kullanıcısı'}</Text>
+          <Text style={styles.chatTitle}>{leftUser?.name ?? 'Kullanıcı seç'}</Text>
           <Pressable accessibilityRole="button" onPress={purge} style={({ pressed }) => [styles.deleteSelectedButton, pressed && styles.pressed]}>
             <Ionicons color="#ffffff" name="trash-bin-outline" size={17} />
             <Text style={styles.deleteSelectedText}>Silinmiş mesajları sil</Text>
@@ -1261,43 +1385,99 @@ function AdminView({
         </View>
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
 
-        <ScrollView horizontal contentContainerStyle={styles.adminUserRail} showsHorizontalScrollIndicator={false}>
-          {allUsers
-            .filter((item) => item.id !== leftUserId)
-            .map((item) => (
-              <Pressable
-                accessibilityRole="button"
-                key={item.id}
-                onPress={() => setRightUserId(item.id)}
-                style={[styles.retentionButton, rightUserId === item.id && styles.retentionButtonActive]}
-              >
-                <Text style={[styles.retentionText, rightUserId === item.id && styles.retentionTextActive]}>{item.name}</Text>
-              </Pressable>
-            ))}
-        </ScrollView>
-
-        <ScrollView contentContainerStyle={styles.messageStack} showsVerticalScrollIndicator={false}>
-          {pairMessages.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Ionicons color={palette.accent} name="file-tray-outline" size={34} />
-              <Text style={styles.emptyTitle}>Bu iki kullanıcı arasında kayıt yok</Text>
-              <Text style={styles.emptyText}>Yeni mesajlar global admin geçmişine işlenir.</Text>
+        {leftUser ? (
+          <View style={styles.adminUserCard}>
+            <Avatar color={palette.blue} label={leftUser.name} premium={leftUser.isPremium} photoURL={leftUser.photoURL} />
+            <View style={styles.rowMain}>
+              <Text style={styles.friendName}>{leftUser.name}</Text>
+              <Text style={styles.friendEmail}>{leftUser.email}</Text>
+              <Text style={styles.rowMessage}>{leftUser.protectedAccount ? 'Silinemez admin hesabı' : 'Standart kullanıcı'}</Text>
             </View>
-          ) : (
-            pairMessages.map((message) => (
-              <View key={message.id} style={[styles.adminMessageRow, message.deletedAt ? styles.deletedMessageRow : null]}>
-                <Text style={[styles.messageText, message.deletedAt ? styles.deletedMessageText : null]}>
-                  {message.text || message.attachment?.name || 'Dosya mesajı'}
-                </Text>
-                <Text style={styles.rowMessage}>
-                  {message.senderEmail || message.senderId} {'->'} {message.receiverEmail || message.receiverId || '?'} ·{' '}
-                  {new Date(message.createdAt).toLocaleString('tr-TR')}
-                  {message.deletedAt ? ` · silindi: ${new Date(message.deletedAt).toLocaleString('tr-TR')}` : ''}
-                </Text>
-              </View>
-            ))
-          )}
-        </ScrollView>
+          </View>
+        ) : null}
+
+        <View style={styles.adminActionGrid}>
+          <Pressable accessibilityRole="button" onPress={() => setAdminAction('edit')} style={({ pressed }) => [styles.adminActionButton, pressed && styles.pressed]}>
+            <Ionicons color={palette.accent} name="create-outline" size={18} />
+            <Text style={styles.smallActionText}>Düzenle</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={() => setAdminAction('history')} style={({ pressed }) => [styles.adminActionButton, pressed && styles.pressed]}>
+            <Ionicons color={palette.accent} name="chatbubbles-outline" size={18} />
+            <Text style={styles.smallActionText}>Mesaj geçmişi</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={Boolean(leftUser?.protectedAccount)}
+            onPress={deleteUser}
+            style={({ pressed }) => [
+              styles.adminDeleteButton,
+              leftUser?.protectedAccount && styles.disabledAction,
+              pressed && !leftUser?.protectedAccount && styles.pressed,
+            ]}
+          >
+            <Ionicons color="#b42318" name="trash-outline" size={18} />
+            <Text style={styles.adminDeleteText}>Kullanıcı sil</Text>
+          </Pressable>
+        </View>
+
+        {adminAction === 'edit' ? (
+          <View style={styles.adminEditPanel}>
+            <LabeledInput icon="person-outline" label="Ad soyad" onChangeText={setEditName} placeholder="Kullanıcı adı" value={editName} />
+            <LabeledInput
+              autoCapitalize="none"
+              icon="mail-outline"
+              keyboardType="email-address"
+              label="E-posta"
+              onChangeText={setEditEmail}
+              placeholder="mail@example.com"
+              value={editEmail}
+            />
+            <PrimaryButton icon="save-outline" label="Kaydet" onPress={saveUser} />
+          </View>
+        ) : null}
+
+        {adminAction === 'history' ? (
+          <>
+            <Text style={styles.paneTitle}>{leftUser?.name ?? 'A kullanıcısı'} {'->'} {rightUser?.name ?? 'B kullanıcısı'}</Text>
+            <ScrollView horizontal contentContainerStyle={styles.adminUserRail} showsHorizontalScrollIndicator={false}>
+              {allUsers
+                .filter((item) => item.id !== leftUserId)
+                .map((item) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    key={item.id}
+                    onPress={() => setRightUserId(item.id)}
+                    style={[styles.retentionButton, rightUserId === item.id && styles.retentionButtonActive]}
+                  >
+                    <Text style={[styles.retentionText, rightUserId === item.id && styles.retentionTextActive]}>{item.name}</Text>
+                  </Pressable>
+                ))}
+            </ScrollView>
+
+            <ScrollView contentContainerStyle={styles.messageStack} showsVerticalScrollIndicator={false}>
+              {pairMessages.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Ionicons color={palette.accent} name="file-tray-outline" size={34} />
+                  <Text style={styles.emptyTitle}>Bu iki kullanıcı arasında kayıt yok</Text>
+                  <Text style={styles.emptyText}>Yeni mesajlar global admin geçmişine işlenir.</Text>
+                </View>
+              ) : (
+                pairMessages.map((message) => (
+                  <View key={message.id} style={[styles.adminMessageRow, message.deletedAt ? styles.deletedMessageRow : null]}>
+                    <Text style={[styles.messageText, message.deletedAt ? styles.deletedMessageText : null]}>
+                      {message.text || message.attachment?.name || 'Dosya mesajı'}
+                    </Text>
+                    <Text style={styles.rowMessage}>
+                      {message.senderEmail || message.senderId} {'->'} {message.receiverEmail || message.receiverId || '?'} ·{' '}
+                      {new Date(message.createdAt).toLocaleString('tr-TR')}
+                      {message.deletedAt ? ` · silindi: ${new Date(message.deletedAt).toLocaleString('tr-TR')}` : ''}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </>
+        ) : null}
       </View>
     </View>
   );
@@ -2140,8 +2320,16 @@ const styles = StyleSheet.create({
     borderBottomColor: '#edf0f5',
     borderBottomWidth: 1,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
     padding: 10,
+  },
+  searchActions: {
+    flexDirection: 'row',
+    flexShrink: 0,
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'flex-end',
   },
   friendGrid: {
     flexDirection: 'row',
@@ -2213,6 +2401,21 @@ const styles = StyleSheet.create({
   },
   smallActionText: {
     color: palette.accent,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  outlineAction: {
+    alignItems: 'center',
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  outlineActionText: {
+    color: palette.muted,
     fontSize: 13,
     fontWeight: '900',
   },
@@ -2381,6 +2584,58 @@ const styles = StyleSheet.create({
   adminUserRail: {
     gap: 8,
     paddingBottom: 12,
+  },
+  adminUserCard: {
+    alignItems: 'center',
+    backgroundColor: '#f7f9fc',
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
+    padding: 14,
+  },
+  adminActionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 14,
+  },
+  adminActionButton: {
+    alignItems: 'center',
+    backgroundColor: palette.accentSoft,
+    borderRadius: 8,
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  adminDeleteButton: {
+    alignItems: 'center',
+    backgroundColor: '#fff1f2',
+    borderRadius: 8,
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  adminDeleteText: {
+    color: '#b42318',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  disabledAction: {
+    opacity: 0.45,
+  },
+  adminEditPanel: {
+    backgroundColor: '#f7f9fc',
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginBottom: 14,
+    maxWidth: 560,
+    padding: 14,
   },
   adminMessageRow: {
     backgroundColor: '#f7f9fc',
