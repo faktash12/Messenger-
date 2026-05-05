@@ -685,6 +685,7 @@ function AuthScreen({
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('register');
   const [panelOpen, setPanelOpen] = useState(false);
+  const [authActionsVisible, setAuthActionsVisible] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -748,17 +749,18 @@ function AuthScreen({
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authRoot}>
       <View style={styles.authBrand}>
         <View style={styles.brandRow}>
-          <View style={styles.logoMark}>
+          <Pressable
+            accessibilityLabel="Giriş seçeneklerini göster"
+            accessibilityRole="button"
+            onPress={() => setAuthActionsVisible((visible) => !visible)}
+            style={({ pressed }) => [styles.logoMark, pressed && styles.pressed]}
+          >
             <Ionicons color="#ffffff" name="leaf-outline" size={28} />
-          </View>
+          </Pressable>
           <Text style={styles.brandTitle}>Özlü Sözler</Text>
         </View>
-        <View style={styles.quoteCard}>
-          <Ionicons color={palette.accent} name="sparkles-outline" size={22} />
-          <Text style={styles.quoteText}>{quote.text}</Text>
-          <Text style={styles.quoteAuthor}>[{quote.author}]</Text>
+        {authActionsVisible ? (
           <View style={styles.quoteActionRow}>
-            <IconActionButton accessibilityLabel="Özlü sözü paylaş" icon="share-social-outline" onPress={shareQuote} />
             <IconActionButton
               accessibilityLabel="Üye ol"
               active={panelOpen && mode === 'register'}
@@ -771,6 +773,14 @@ function AuthScreen({
               icon="key-outline"
               onPress={() => openPanel('login')}
             />
+          </View>
+        ) : null}
+        <View style={styles.quoteCard}>
+          <Ionicons color={palette.accent} name="sparkles-outline" size={22} />
+          <Text style={styles.quoteText}>{quote.text}</Text>
+          <Text style={styles.quoteAuthor}>[{quote.author}]</Text>
+          <View style={styles.quoteActionRow}>
+            <IconActionButton accessibilityLabel="Özlü sözü paylaş" icon="share-social-outline" onPress={shareQuote} />
           </View>
         </View>
       </View>
