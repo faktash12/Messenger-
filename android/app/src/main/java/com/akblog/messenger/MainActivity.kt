@@ -1,4 +1,4 @@
-package com.messengerplus.app
+package com.akblog.messenger
 
 import android.os.Build
 import android.os.Bundle

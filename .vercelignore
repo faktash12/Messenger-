@@ -1,0 +1,12 @@
+node_modules/
+.cache/
+.expo/
+dist/
+web-build/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+*.apk
+*.aab
+expo-web.log

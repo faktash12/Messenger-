@@ -40,3 +40,5 @@ expo-web.log
 
 # generated native folders
 /ios
+
+.vercel

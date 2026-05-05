@@ -1,6 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { StatusBar } from 'expo-status-bar';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+} from 'firebase/auth';
 import { useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -14,7 +21,20 @@ import {
   View,
 } from 'react-native';
 
+import {
+  pruneExpiredMessages,
+  saveConversation,
+  saveFriend,
+  saveMessage,
+  subscribeConversations,
+  subscribeFriends,
+  subscribeMessages,
+  updateConversationRetention,
+  uploadAttachment,
+  upsertUserProfile,
+} from './src/chatStore';
 import { demoUser, directory, initialConversations, initialFriends, initialMessages } from './src/data';
+import { auth } from './src/firebase';
 import { formatRemaining, getRetention, retentionOptions } from './src/retention';
 import type { Conversation, Friend, Message, RetentionId, TabId, User } from './src/types';
 
@@ -42,6 +62,7 @@ const tabs: Array<{ id: TabId; label: string; icon: keyof typeof Ionicons.glyphM
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [friends, setFriends] = useState<Friend[]>(initialFriends);
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
@@ -50,25 +71,103 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
+    return onAuthStateChanged(auth, async (firebaseUser) => {
+      try {
+        if (firebaseUser) {
+          const profile = await upsertUserProfile(firebaseUser);
+          setUser(profile);
+        } else {
+          setUser(null);
+        }
+      } finally {
+        setAuthReady(true);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      return undefined;
+    }
+
+    const unsubscribers = [
+      subscribeFriends(user.id, setFriends),
+      subscribeConversations(user.id, (items) => {
+        setConversations(items);
+        if (items.length > 0 && !items.some((item) => item.id === selectedConversationId)) {
+          setSelectedConversationId(items[0].id);
+        }
+      }),
+      subscribeMessages(user.id, setMessages),
+    ];
+
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [selectedConversationId, user]);
+
+  useEffect(() => {
     const timer = setInterval(() => {
       const tick = Date.now();
       setNow(tick);
       setMessages((current) => current.filter((message) => message.expiresAt > tick));
+      if (user) {
+        pruneExpiredMessages(user.id, tick).catch(() => undefined);
+      }
     }, 5000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [user]);
 
   const visibleMessages = useMemo(
     () => messages.filter((message) => message.expiresAt > now),
     [messages, now],
   );
 
+  const authenticate = async ({
+    cleanEmail,
+    mode,
+    name,
+    password,
+  }: {
+    cleanEmail: string;
+    mode: 'login' | 'register';
+    name: string;
+    password: string;
+  }) => {
+    const credential =
+      mode === 'register'
+        ? await createUserWithEmailAndPassword(auth, cleanEmail, password)
+        : await signInWithEmailAndPassword(auth, cleanEmail, password);
+
+    if (mode === 'register' && name.trim()) {
+      await updateProfile(credential.user, { displayName: name.trim() });
+    }
+
+    const profile = await upsertUserProfile(credential.user, name);
+    setUser(profile);
+  };
+
+  if (!authReady) {
+    return (
+      <>
+        <StatusBar style="dark" />
+        <View style={styles.authRoot}>
+          <View style={styles.logoMark}>
+            <Ionicons color="#ffffff" name="chatbubble-ellipses" size={30} />
+          </View>
+          <Text style={styles.brandTitle}>Messenger+</Text>
+          <Text style={styles.authTitle}>Firebase oturumu hazırlanıyor</Text>
+        </View>
+      </>
+    );
+  }
+
   if (!user) {
     return (
       <>
         <StatusBar style="dark" />
-        <AuthScreen onAuthenticate={setUser} />
+        <AuthScreen onAuthenticate={authenticate} />
       </>
     );
   }
@@ -103,6 +202,8 @@ export default function App() {
 
     setFriends((current) => [...current, newFriend]);
     setConversations((current) => [...current, newConversation]);
+    saveFriend(user.id, newFriend).catch(() => undefined);
+    saveConversation(user.id, newConversation).catch(() => undefined);
     setSelectedConversationId(newConversation.id);
     setActiveTab('chats');
     return `${newFriend.name} arkadaş olarak eklendi.`;
@@ -117,17 +218,17 @@ export default function App() {
     const createdAt = Date.now();
     const retention = getRetention(conversation.retentionId);
 
-    setMessages((current) => [
-      ...current,
-      {
-        id: `msg-${createdAt}`,
-        conversationId,
-        senderId: user.id,
-        text: text.trim(),
-        createdAt,
-        expiresAt: createdAt + retention.milliseconds,
-      },
-    ]);
+    const nextMessage: Message = {
+      id: `msg-${createdAt}`,
+      conversationId,
+      senderId: user.id,
+      text: text.trim(),
+      createdAt,
+      expiresAt: createdAt + retention.milliseconds,
+    };
+
+    setMessages((current) => [...current, nextMessage]);
+    saveMessage(user.id, nextMessage).catch(() => undefined);
   };
 
   const sendFile = async (conversationId: string) => {
@@ -149,22 +250,29 @@ export default function App() {
     const createdAt = Date.now();
     const retention = getRetention(conversation.retentionId);
 
-    setMessages((current) => [
-      ...current,
-      {
-        id: `file-${createdAt}`,
-        conversationId,
-        senderId: user.id,
-        attachment: {
-          name: asset.name,
-          size: asset.size,
-          mimeType: asset.mimeType,
-          uri: asset.uri,
-        },
-        createdAt,
-        expiresAt: createdAt + retention.milliseconds,
-      },
-    ]);
+    const localAttachment = {
+      name: asset.name,
+      size: asset.size,
+      mimeType: asset.mimeType,
+      uri: asset.uri,
+    };
+    const nextMessage: Message = {
+      id: `file-${createdAt}`,
+      conversationId,
+      senderId: user.id,
+      attachment: localAttachment,
+      createdAt,
+      expiresAt: createdAt + retention.milliseconds,
+    };
+
+    setMessages((current) => [...current, nextMessage]);
+
+    try {
+      const uploadedAttachment = await uploadAttachment(user.id, conversationId, localAttachment);
+      await saveMessage(user.id, { ...nextMessage, attachment: uploadedAttachment });
+    } catch {
+      await saveMessage(user.id, nextMessage);
+    }
   };
 
   const updateRetention = (conversationId: string, retentionId: RetentionId) => {
@@ -176,13 +284,19 @@ export default function App() {
         conversation.id === conversationId ? { ...conversation, retentionId } : conversation,
       ),
     );
+    updateConversationRetention(user.id, conversationId, retentionId).catch(() => undefined);
 
     setMessages((current) =>
-      current.map((message) =>
-        message.conversationId === conversationId
-          ? { ...message, expiresAt: changedAt + retention.milliseconds }
-          : message,
-      ),
+      current.map((message) => {
+        const nextMessage =
+          message.conversationId === conversationId
+            ? { ...message, expiresAt: changedAt + retention.milliseconds }
+            : message;
+        if (nextMessage !== message) {
+          saveMessage(user.id, nextMessage).catch(() => undefined);
+        }
+        return nextMessage;
+      }),
     );
   };
 
@@ -202,7 +316,7 @@ export default function App() {
         onActivatePremium={activatePremium}
         onAddFriend={addFriend}
         onChangeRetention={updateRetention}
-        onLogout={() => setUser(null)}
+        onLogout={() => signOut(auth)}
         onSelectConversation={(conversationId) => {
           setSelectedConversationId(conversationId);
           setActiveTab('chats');
@@ -217,14 +331,24 @@ export default function App() {
   );
 }
 
-function AuthScreen({ onAuthenticate }: { onAuthenticate: (user: User) => void }) {
+function AuthScreen({
+  onAuthenticate,
+}: {
+  onAuthenticate: (payload: {
+    cleanEmail: string;
+    mode: 'login' | 'register';
+    name: string;
+    password: string;
+  }) => Promise<void>;
+}) {
   const [mode, setMode] = useState<'login' | 'register'>('register');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [notice, setNotice] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
     const cleanEmail = email.trim().toLowerCase();
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail);
 
@@ -243,12 +367,22 @@ function AuthScreen({ onAuthenticate }: { onAuthenticate: (user: User) => void }
       return;
     }
 
-    onAuthenticate({
-      id: cleanEmail === demoUser.email ? demoUser.id : `user-${Date.now()}`,
-      name: mode === 'register' ? name.trim() : cleanEmail.split('@')[0],
-      email: cleanEmail,
-      isPremium: cleanEmail === demoUser.email,
-    });
+    setSubmitting(true);
+    setNotice('');
+
+    try {
+      await onAuthenticate({
+        cleanEmail,
+        mode,
+        name: mode === 'register' ? name.trim() : cleanEmail.split('@')[0],
+        password,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Firebase oturumu açılamadı.';
+      setNotice(message.replace('Firebase: ', ''));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -299,10 +433,19 @@ function AuthScreen({ onAuthenticate }: { onAuthenticate: (user: User) => void }
 
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
 
-        <PrimaryButton icon="arrow-forward" label={mode === 'register' ? 'Hesap oluştur' : 'Giriş yap'} onPress={submit} />
+        <PrimaryButton
+          icon="arrow-forward"
+          label={submitting ? 'Bağlanıyor...' : mode === 'register' ? 'Hesap oluştur' : 'Giriş yap'}
+          onPress={submit}
+        />
         <Pressable
           accessibilityRole="button"
-          onPress={() => onAuthenticate(demoUser)}
+          onPress={() => {
+            setMode('login');
+            setEmail(demoUser.email);
+            setPassword('Messenger123');
+            setNotice('Demo için Firebase Auth üzerinde demo@messenger.plus / Messenger123 hesabı gerekir.');
+          }}
           style={({ pressed }) => [styles.demoButton, pressed && styles.pressed]}
         >
           <Ionicons color={palette.accent} name="flash-outline" size={18} />

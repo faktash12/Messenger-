@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1052135811563",
+    "project_id": "messenger-37c0d",
+    "storage_bucket": "messenger-37c0d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1052135811563:android:78580f536a506e2b14d1ae",
+        "android_client_info": {
+          "package_name": "com.akblog.messenger"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCdGKCzUr-6y-55OJhuYJLfyMvwOl9QmWU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
