@@ -8,10 +8,10 @@ export const retentionOptions: Array<{
   shortLabel: string;
   milliseconds: number;
 }> = [
+  { id: 'instant', label: 'Hemen sil', shortLabel: 'Hemen sil', milliseconds: foreverMilliseconds },
   { id: '1m', label: '1 dakika', shortLabel: '1 dk', milliseconds: 60 * 1000 },
   { id: '10m', label: '10 dakika', shortLabel: '10 dk', milliseconds: 10 * 60 * 1000 },
   { id: '1h', label: '1 saat', shortLabel: '1 saat', milliseconds: 60 * 60 * 1000 },
-  { id: '1d', label: '1 gün', shortLabel: '1 gün', milliseconds: 24 * 60 * 60 * 1000 },
   { id: 'forever', label: 'Süresiz', shortLabel: 'Süresiz', milliseconds: foreverMilliseconds },
 ];
 

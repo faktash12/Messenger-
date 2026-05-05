@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Image,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -44,6 +45,7 @@ import {
 } from './src/chatStore';
 import { adminCredentials, adminUser, directory, initialConversations, initialFriends, initialMessages } from './src/data';
 import { auth } from './src/firebase';
+import { quotes } from './src/quotes';
 import { formatRemaining, getRetention, retentionOptions } from './src/retention';
 import type { Conversation, Friend, Message, RetentionId, TabId, User } from './src/types';
 
@@ -282,10 +284,9 @@ export default function App() {
         <StatusBar style="dark" />
         <View style={styles.authRoot}>
           <View style={styles.logoMark}>
-            <Ionicons color="#ffffff" name="chatbubble-ellipses" size={30} />
+            <Ionicons color="#ffffff" name="leaf-outline" size={30} />
           </View>
           <Text style={styles.brandTitle}>Özlü Sözler</Text>
-          <Text style={styles.authTitle}>Firebase oturumu hazırlanıyor</Text>
         </View>
       </>
     );
@@ -310,7 +311,7 @@ export default function App() {
         existingConversation ?? {
           id: `chat-${existing.id}`,
           friendId: existing.id,
-          retentionId: user.isPremium ? '1d' : '10m',
+          retentionId: user.isPremium ? 'forever' : '10m',
         };
       if (!existingConversation) {
         setConversations((current) => [...current, conversation]);
@@ -354,7 +355,7 @@ export default function App() {
     const newConversation: Conversation = {
       id: `chat-${newFriend.id}`,
       friendId: newFriend.id,
-      retentionId: user.isPremium ? '1d' : '10m',
+      retentionId: user.isPremium ? 'forever' : '10m',
     };
 
     setFriends((current) => [...current, newFriend]);
@@ -428,6 +429,7 @@ export default function App() {
     const result = await DocumentPicker.getDocumentAsync({
       copyToCacheDirectory: true,
       multiple: false,
+      type: ['image/*', 'video/*', 'application/pdf', '*/*'],
     });
 
     if (result.canceled || !result.assets[0]) {
@@ -468,10 +470,16 @@ export default function App() {
         if (friend?.userId) {
           await saveIncomingMessage(friend.userId, user, conversation, uploadedMessage).catch(() => undefined);
         }
-      } catch {
-        await saveMessage(user.id, nextMessage);
+      } catch (error) {
+        const failedMessage = {
+          ...nextMessage,
+          text: `Dosya yüklenemedi: ${localAttachment.name}`,
+          attachment: undefined,
+        };
+        setMessages((current) => current.map((message) => (message.id === nextMessage.id ? failedMessage : message)));
+        await saveMessage(user.id, failedMessage);
         if (friend?.userId) {
-          await saveIncomingMessage(friend.userId, user, conversation, nextMessage).catch(() => undefined);
+          await saveIncomingMessage(friend.userId, user, conversation, failedMessage).catch(() => undefined);
         }
       }
     }
@@ -600,6 +608,20 @@ export default function App() {
     return `${targetUser.name} kullanıcı listesinden kaldırıldı.`;
   };
 
+  const closeConversation = async () => {
+    const conversationId = openConversationId;
+    const conversation = conversations.find((item) => item.id === conversationId);
+
+    if (conversation?.retentionId === 'instant') {
+      const messageIds = messages
+        .filter((message) => message.conversationId === conversation.id && !message.deletedAt)
+        .map((message) => message.id);
+      await deleteSelectedMessages(messageIds);
+    }
+
+    setOpenConversationId(null);
+  };
+
   return (
     <>
       <StatusBar style="dark" />
@@ -629,16 +651,18 @@ export default function App() {
         onSendFile={sendFile}
         onSendMessage={sendMessage}
         onSetTab={(tab) => {
-          setActiveTab(tab);
           if (tab !== 'chats') {
-            setOpenConversationId(null);
+            void closeConversation();
           }
+          setActiveTab(tab);
         }}
         onPurgeDeleted={purgeDeleted}
         onUpdateAdminUser={updateAdminUser}
         onUpdateProfilePhoto={updateProfilePhoto}
         openConversationId={openConversationId}
-        onCloseConversation={() => setOpenConversationId(null)}
+        onCloseConversation={() => {
+          void closeConversation();
+        }}
         selectedConversationId={selectedConversationId}
         allUsers={allUsers}
         ledgerMessages={ledgerMessages}
@@ -664,6 +688,7 @@ function AuthScreen({
   const [password, setPassword] = useState('');
   const [notice, setNotice] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [quote] = useState(() => quotes[Math.floor(Math.random() * quotes.length)]);
 
   const submit = async () => {
     const cleanEmail = email.trim().toLowerCase();
@@ -704,17 +729,23 @@ function AuthScreen({
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authRoot}>
       <View style={styles.authBrand}>
-        <View style={styles.logoMark}>
-          <Ionicons color="#ffffff" name="chatbubble-ellipses" size={30} />
+        <View style={styles.brandRow}>
+          <View style={styles.logoMark}>
+            <Ionicons color="#ffffff" name="leaf-outline" size={28} />
+          </View>
+          <Text style={styles.brandTitle}>Özlü Sözler</Text>
         </View>
-        <Text style={styles.brandTitle}>Özlü Sözler</Text>
-        <Text style={styles.authTitle}>Ultra güvenli, süreli mesajlaşma</Text>
+        <View style={styles.quoteCard}>
+          <Ionicons color={palette.accent} name="sparkles-outline" size={22} />
+          <Text style={styles.quoteText}>{quote.text}</Text>
+          <Text style={styles.quoteAuthor}>[{quote.author}]</Text>
+        </View>
       </View>
 
       <View style={styles.authCard}>
         <View style={styles.modeSwitch}>
-          <SegmentButton active={mode === 'register'} label="Üye ol" onPress={() => setMode('register')} />
-          <SegmentButton active={mode === 'login'} label="Giriş yap" onPress={() => setMode('login')} />
+          <SegmentButton active={mode === 'register'} icon="person-add-outline" label="Üye ol" onPress={() => setMode('register')} />
+          <SegmentButton active={mode === 'login'} icon="key-outline" label="Giriş yap" onPress={() => setMode('login')} />
         </View>
 
         {mode === 'register' ? (
@@ -1165,7 +1196,8 @@ function ChatPanel({
                   {message.text ? <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.text}</Text> : null}
                   {message.attachment ? <AttachmentCard attachment={message.attachment} mine={mine} /> : null}
                   <Text style={[styles.messageMeta, mine && styles.messageMetaMine]}>
-                    {new Date(message.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })} · {formatRemaining(message.expiresAt, now)}
+                    {new Date(message.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })} ·{' '}
+                    {conversation.retentionId === 'instant' ? 'Çıkınca silinir' : formatRemaining(message.expiresAt, now)}
                   </Text>
                 </Pressable>
               );
@@ -1613,7 +1645,7 @@ function SettingsView({ onLogout, onUpdateProfilePhoto, user }: { onLogout: () =
         <SettingsRow icon="mail-outline" label="E-posta" value={user.email} />
         <SettingsRow icon="diamond-outline" label="Plan" value={user.isPremium ? 'Ultra Premium' : 'Standart'} />
         <SettingsRow icon="shield-checkmark-outline" label="Yetki" value={user.isAdmin ? 'Silinemez admin' : 'Kullanıcı'} />
-        <SettingsRow icon="timer-outline" label="Varsayılan süre" value={user.isPremium ? '1 gün' : '10 dakika'} />
+        <SettingsRow icon="timer-outline" label="Varsayılan süre" value={user.isPremium ? 'Süresiz' : '10 dakika'} />
         <Pressable accessibilityRole="button" onPress={onLogout} style={({ pressed }) => [styles.dangerButton, pressed && styles.pressed]}>
           <Ionicons color="#b42318" name="log-out-outline" size={19} />
           <Text style={styles.dangerText}>Çıkış yap</Text>
@@ -1659,9 +1691,20 @@ function PrimaryButton({
   );
 }
 
-function SegmentButton({ active, label, onPress }: { active: boolean; label: string; onPress: () => void }) {
+function SegmentButton({
+  active,
+  icon,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+}) {
   return (
     <Pressable accessibilityRole="button" onPress={onPress} style={[styles.segmentButton, active && styles.segmentButtonActive]}>
+      <Ionicons color={active ? palette.ink : palette.muted} name={icon} size={17} />
       <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
     </Pressable>
   );
@@ -1688,7 +1731,16 @@ function AttachmentCard({ attachment, mine }: { attachment: Message['attachment'
   const size = attachment.size ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : 'Dosya';
 
   return (
-    <View style={[styles.attachmentCard, mine && styles.attachmentCardMine]}>
+    <Pressable
+      accessibilityRole={attachment.uri ? 'link' : 'text'}
+      disabled={!attachment.uri}
+      onPress={() => {
+        if (attachment.uri) {
+          Linking.openURL(attachment.uri).catch(() => undefined);
+        }
+      }}
+      style={({ pressed }) => [styles.attachmentCard, mine && styles.attachmentCardMine, pressed && styles.pressed]}
+    >
       <Ionicons color={mine ? '#ffffff' : palette.accent} name="document-attach-outline" size={22} />
       <View style={styles.attachmentTextWrap}>
         <Text numberOfLines={1} style={[styles.attachmentName, mine && styles.messageTextMine]}>
@@ -1696,7 +1748,7 @@ function AttachmentCard({ attachment, mine }: { attachment: Message['attachment'
         </Text>
         <Text style={[styles.attachmentSize, mine && styles.messageMetaMine]}>{size}</Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -1732,34 +1784,59 @@ const styles = StyleSheet.create({
   },
   authRoot: {
     alignItems: 'center',
-    backgroundColor: palette.soft,
+    backgroundColor: '#eef7f4',
     flex: 1,
     justifyContent: 'center',
     padding: 22,
   },
   authBrand: {
     alignItems: 'center',
-    marginBottom: 26,
+    gap: 16,
+    marginBottom: 20,
+    maxWidth: 520,
+    width: '100%',
+  },
+  brandRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'center',
   },
   logoMark: {
     alignItems: 'center',
     backgroundColor: palette.accent,
-    borderRadius: 20,
-    height: 64,
+    borderRadius: 16,
+    height: 54,
     justifyContent: 'center',
-    marginBottom: 14,
-    width: 64,
+    width: 54,
   },
   brandTitle: {
     color: palette.ink,
     fontSize: 34,
-    fontWeight: '800',
+    fontWeight: '900',
     letterSpacing: 0,
   },
-  authTitle: {
+  quoteCard: {
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderColor: '#c7e8df',
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 8,
+    padding: 18,
+    width: '100%',
+  },
+  quoteText: {
+    color: palette.ink,
+    fontSize: 18,
+    fontWeight: '800',
+    lineHeight: 26,
+    textAlign: 'center',
+  },
+  quoteAuthor: {
     color: palette.muted,
-    fontSize: 16,
-    marginTop: 6,
+    fontSize: 14,
+    fontWeight: '800',
     textAlign: 'center',
   },
   authCard: {
@@ -1793,6 +1870,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 6,
     flex: 1,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
     paddingVertical: 11,
   },
   segmentButtonActive: {

@@ -65,7 +65,7 @@ export const initialFriends = directory.slice(0, 3);
 export const initialConversations: Conversation[] = [
   { id: 'chat-ece', friendId: 'ece', retentionId: '10m' },
   { id: 'chat-baran', friendId: 'baran', retentionId: '1h' },
-  { id: 'chat-zeynep', friendId: 'zeynep', retentionId: '1d' },
+  { id: 'chat-zeynep', friendId: 'zeynep', retentionId: 'forever' },
 ];
 
 function expiry(retentionId: Conversation['retentionId'], createdAt: number) {
@@ -103,6 +103,6 @@ export const initialMessages: Message[] = [
     senderId: 'zeynep',
     text: 'Ultra Premium için kaybolan sohbet süresini arkadaş bazlı seçmek iyi olmuş.',
     createdAt: now - 2 * 60 * 60 * 1000,
-    expiresAt: expiry('1d', now - 2 * 60 * 60 * 1000),
+    expiresAt: expiry('forever', now - 2 * 60 * 60 * 1000),
   },
 ];

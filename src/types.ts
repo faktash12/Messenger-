@@ -1,4 +1,4 @@
-export type RetentionId = '1m' | '10m' | '1h' | '1d' | 'forever';
+export type RetentionId = 'instant' | '1m' | '10m' | '1h' | 'forever';
 
 export type TabId = 'chats' | 'friends' | 'premium' | 'settings' | 'admin';
 

@@ -1,6 +1,7 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FirebaseApp, getApp, getApps, initializeApp } from 'firebase/app';
 import { getAnalytics, isSupported } from 'firebase/analytics';
-import { getAuth } from 'firebase/auth';
+import { getAuth, initializeAuth, type Auth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { Platform } from 'react-native';
@@ -17,7 +18,44 @@ const firebaseConfig = {
 
 export const firebaseApp: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-export const auth = getAuth(firebaseApp);
+const reactNativePersistence = {
+  type: 'LOCAL' as const,
+  async _isAvailable() {
+    return true;
+  },
+  async _set(key: string, value: unknown) {
+    await AsyncStorage.setItem(key, JSON.stringify(value));
+  },
+  async _get<T>(key: string) {
+    const value = await AsyncStorage.getItem(key);
+    return value ? (JSON.parse(value) as T) : null;
+  },
+  async _remove(key: string) {
+    await AsyncStorage.removeItem(key);
+  },
+  _addListener() {
+    return undefined;
+  },
+  _removeListener() {
+    return undefined;
+  },
+};
+
+function createAuth(): Auth {
+  if (Platform.OS === 'web') {
+    return getAuth(firebaseApp);
+  }
+
+  try {
+    return initializeAuth(firebaseApp, {
+      persistence: reactNativePersistence as never,
+    });
+  } catch {
+    return getAuth(firebaseApp);
+  }
+}
+
+export const auth = createAuth();
 export const firestore = getFirestore(firebaseApp);
 export const storage = getStorage(firebaseApp);
 
