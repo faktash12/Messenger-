@@ -7,7 +7,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "apk:build": "node scripts/build-android-apk.mjs",
+    "apk:build": "node scripts/build-android-apk.mjs --variant=release",
+    "apk:build:debug": "node scripts/build-android-apk.mjs --variant=debug",
     "apk:build:release": "node scripts/build-android-apk.mjs --variant=release",
     "apk:dry-run": "node scripts/build-android-apk.mjs --dry-run"
   },

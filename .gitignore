@@ -28,6 +28,10 @@ yarn-debug.*
 yarn-error.*
 expo-web.log
 
+# local build artifacts
+artifacts/apk/*.apk
+artifacts/apk/*.aab
+
 # macOS
 .DS_Store
 *.pem
