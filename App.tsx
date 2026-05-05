@@ -11,6 +11,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -23,14 +24,21 @@ import {
 
 import {
   pruneExpiredMessages,
+  purgeDeletedMessages,
+  purgeExpiredDeletedMessages,
   saveConversation,
   saveFriend,
   saveMessage,
+  softDeleteMessages,
+  subscribeAllUsers,
   subscribeConversations,
   subscribeFriends,
+  subscribeLedgerMessages,
   subscribeMessages,
   updateConversationRetention,
+  updateUserProfile,
   uploadAttachment,
+  uploadProfilePhoto,
   upsertUserProfile,
 } from './src/chatStore';
 import { adminCredentials, adminUser, demoUser, directory, initialConversations, initialFriends, initialMessages } from './src/data';
@@ -57,6 +65,7 @@ const tabs: Array<{ id: TabId; label: string; icon: keyof typeof Ionicons.glyphM
   { id: 'chats', label: 'Sohbetler', icon: 'chatbubbles-outline' },
   { id: 'friends', label: 'Arkadaşlar', icon: 'people-outline' },
   { id: 'premium', label: 'Ultra', icon: 'diamond-outline' },
+  { id: 'admin', label: 'Admin', icon: 'server-outline' },
   { id: 'settings', label: 'Ayarlar', icon: 'shield-checkmark-outline' },
 ];
 
@@ -88,6 +97,8 @@ export default function App() {
   const [friends, setFriends] = useState<Friend[]>(initialFriends);
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [ledgerMessages, setLedgerMessages] = useState<Message[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>('chats');
   const [selectedConversationId, setSelectedConversationId] = useState(initialConversations[0].id);
   const [now, setNow] = useState(Date.now());
@@ -129,12 +140,28 @@ export default function App() {
   }, [selectedConversationId, user]);
 
   useEffect(() => {
+    if (!user) {
+      return undefined;
+    }
+
+    const unsubscribers = [
+      subscribeAllUsers(setAllUsers),
+      ...(user.isAdmin ? [subscribeLedgerMessages(setLedgerMessages)] : []),
+    ];
+
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [user]);
+
+  useEffect(() => {
     const timer = setInterval(() => {
       const tick = Date.now();
       setNow(tick);
       setMessages((current) => current.filter((message) => message.expiresAt > tick));
       if (usesFirebase(user)) {
         pruneExpiredMessages(user.id, tick).catch(() => undefined);
+        purgeExpiredDeletedMessages().catch(() => undefined);
       }
     }, 5000);
 
@@ -142,7 +169,7 @@ export default function App() {
   }, [user]);
 
   const visibleMessages = useMemo(
-    () => messages.filter((message) => message.expiresAt > now),
+    () => messages.filter((message) => message.expiresAt > now && !message.deletedAt),
     [messages, now],
   );
 
@@ -159,14 +186,26 @@ export default function App() {
   }) => {
     if (cleanEmail === adminCredentials.email && password === adminCredentials.password) {
       setUser(adminUser);
+      setAllUsers([
+        adminUser,
+        ...initialFriends.map((friend) => ({
+          id: friend.id,
+          name: friend.name,
+          email: friend.email,
+          isPremium: friend.premium,
+        })),
+      ]);
       setFriends(initialFriends);
       setConversations(initialConversations);
-      setMessages(
-        initialMessages.map((message) => ({
+      const adminMessages = initialMessages.map((message) => ({
           ...message,
           senderId: message.senderId === 'me' ? adminUser.id : message.senderId,
-        })),
-      );
+          senderEmail: message.senderId === 'me' ? adminUser.email : `${message.senderId}@example.com`,
+          receiverId: message.senderId === 'me' ? 'ece' : adminUser.id,
+          receiverEmail: message.senderId === 'me' ? 'ece@example.com' : adminUser.email,
+        }));
+      setMessages(adminMessages);
+      setLedgerMessages(adminMessages);
       setSelectedConversationId(initialConversations[0].id);
       setActiveTab('chats');
       return;
@@ -220,7 +259,20 @@ export default function App() {
     }
 
     const fromDirectory = directory.find((friend) => friend.email.toLowerCase() === cleanEmail);
+    const registeredUser = allUsers.find((item) => item.email.toLowerCase() === cleanEmail);
     const newFriend: Friend =
+      registeredUser
+        ? {
+            id: registeredUser.id,
+            userId: registeredUser.id,
+            name: registeredUser.name,
+            email: registeredUser.email,
+            status: 'online',
+            avatarColor: palette.blue,
+            premium: registeredUser.isPremium,
+            photoURL: registeredUser.photoURL,
+          }
+        :
       fromDirectory ??
       {
         id: `friend-${Date.now()}`,
@@ -250,6 +302,7 @@ export default function App() {
 
   const sendMessage = (conversationId: string, text: string) => {
     const conversation = conversations.find((item) => item.id === conversationId);
+    const friend = friends.find((item) => item.id === conversation?.friendId);
     if (!conversation || !text.trim()) {
       return;
     }
@@ -261,6 +314,11 @@ export default function App() {
       id: `msg-${createdAt}`,
       conversationId,
       senderId: user.id,
+      receiverId: friend?.userId ?? friend?.id,
+      senderEmail: user.email,
+      receiverEmail: friend?.email,
+      senderName: user.name,
+      receiverName: friend?.name,
       text: text.trim(),
       createdAt,
       expiresAt: createdAt + retention.milliseconds,
@@ -274,6 +332,7 @@ export default function App() {
 
   const sendFile = async (conversationId: string) => {
     const conversation = conversations.find((item) => item.id === conversationId);
+    const friend = friends.find((item) => item.id === conversation?.friendId);
     if (!conversation) {
       return;
     }
@@ -301,6 +360,11 @@ export default function App() {
       id: `file-${createdAt}`,
       conversationId,
       senderId: user.id,
+      receiverId: friend?.userId ?? friend?.id,
+      senderEmail: user.email,
+      receiverEmail: friend?.email,
+      senderName: user.name,
+      receiverName: friend?.name,
       attachment: localAttachment,
       createdAt,
       expiresAt: createdAt + retention.milliseconds,
@@ -345,6 +409,73 @@ export default function App() {
     );
   };
 
+  const deleteSelectedMessages = async (messageIds: string[]) => {
+    if (messageIds.length === 0) {
+      return;
+    }
+
+    const deletedAt = Date.now();
+    setMessages((current) =>
+      current.map((message) =>
+        messageIds.includes(message.id)
+          ? { ...message, deletedAt, deletedBy: user.id, hardDeleteAfter: deletedAt + 30 * 24 * 60 * 60 * 1000 }
+          : message,
+      ),
+    );
+
+    if (usesFirebase(user)) {
+      await softDeleteMessages(user.id, messageIds);
+    }
+  };
+
+  const updateProfilePhoto = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      copyToCacheDirectory: true,
+      multiple: false,
+      type: 'image/*',
+    });
+
+    if (result.canceled || !result.assets[0]) {
+      return;
+    }
+
+    const asset = result.assets[0];
+    const fallbackUri = asset.uri;
+    setUser((current) => (current ? { ...current, photoURL: fallbackUri } : current));
+
+    if (usesFirebase(user)) {
+      try {
+        const photoURL = await uploadProfilePhoto(user.id, {
+          name: asset.name,
+          size: asset.size,
+          mimeType: asset.mimeType,
+          uri: asset.uri,
+        });
+        if (photoURL) {
+          await updateUserProfile(user.id, { photoURL });
+          setUser((current) => (current ? { ...current, photoURL } : current));
+        }
+      } catch {
+        await updateUserProfile(user.id, { photoURL: fallbackUri }).catch(() => undefined);
+      }
+    }
+  };
+
+  const purgeDeleted = async () => {
+    if (!user.isAdmin) {
+      return 0;
+    }
+
+    const deletedIds = new Set(ledgerMessages.filter((message) => message.deletedAt).map((message) => message.id));
+    setLedgerMessages((current) => current.filter((message) => !deletedIds.has(message.id)));
+
+    try {
+      return await purgeDeletedMessages();
+    } catch {
+      return deletedIds.size;
+    }
+  };
+
   const activatePremium = () => {
     setUser((current) => (current ? { ...current, isPremium: true } : current));
   };
@@ -361,6 +492,7 @@ export default function App() {
         onActivatePremium={activatePremium}
         onAddFriend={addFriend}
         onChangeRetention={updateRetention}
+        onDeleteMessages={deleteSelectedMessages}
         onLogout={() => {
           if (usesFirebase(user)) {
             signOut(auth);
@@ -375,7 +507,11 @@ export default function App() {
         onSendFile={sendFile}
         onSendMessage={sendMessage}
         onSetTab={setActiveTab}
+        onPurgeDeleted={purgeDeleted}
+        onUpdateProfilePhoto={updateProfilePhoto}
         selectedConversationId={selectedConversationId}
+        allUsers={allUsers}
+        ledgerMessages={ledgerMessages}
         user={user}
       />
     </>
@@ -508,34 +644,44 @@ function AuthScreen({
 
 function AppShell({
   activeTab,
+  allUsers,
   conversations,
   friends,
+  ledgerMessages,
   messages,
   now,
   onActivatePremium,
   onAddFriend,
   onChangeRetention,
+  onDeleteMessages,
   onLogout,
+  onPurgeDeleted,
   onSelectConversation,
   onSendFile,
   onSendMessage,
   onSetTab,
+  onUpdateProfilePhoto,
   selectedConversationId,
   user,
 }: {
   activeTab: TabId;
+  allUsers: User[];
   conversations: Conversation[];
   friends: Friend[];
+  ledgerMessages: Message[];
   messages: Message[];
   now: number;
   onActivatePremium: () => void;
   onAddFriend: (email: string) => string;
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
+  onDeleteMessages: (messageIds: string[]) => Promise<void>;
   onLogout: () => void;
+  onPurgeDeleted: () => Promise<number>;
   onSelectConversation: (conversationId: string) => void;
   onSendFile: (conversationId: string) => Promise<void>;
   onSendMessage: (conversationId: string, text: string) => void;
   onSetTab: (tab: TabId) => void;
+  onUpdateProfilePhoto: () => Promise<void>;
   selectedConversationId: string;
   user: User;
 }) {
@@ -566,7 +712,7 @@ function AppShell({
         </View>
 
         <View style={[styles.nav, !isWide && styles.navMobile]}>
-          {tabs.map((tab) => (
+          {tabs.filter((tab) => tab.id !== 'admin' || user.isAdmin).map((tab) => (
             <Pressable
               accessibilityRole="tab"
               accessibilityState={{ selected: activeTab === tab.id }}
@@ -605,6 +751,7 @@ function AppShell({
             onSelectConversation={onSelectConversation}
             onSendFile={onSendFile}
             onSendMessage={onSendMessage}
+            onDeleteMessages={onDeleteMessages}
             selectedConversation={selectedConversation}
             user={user}
           />
@@ -613,12 +760,16 @@ function AppShell({
           <FriendsView
             conversations={conversations}
             friends={friends}
+            allUsers={allUsers}
             onAddFriend={onAddFriend}
             onSelectConversation={onSelectConversation}
           />
         ) : null}
+        {activeTab === 'admin' ? (
+          <AdminView allUsers={allUsers} messages={ledgerMessages} onPurgeDeleted={onPurgeDeleted} />
+        ) : null}
         {activeTab === 'premium' ? <PremiumView onActivatePremium={onActivatePremium} user={user} /> : null}
-        {activeTab === 'settings' ? <SettingsView onLogout={onLogout} user={user} /> : null}
+        {activeTab === 'settings' ? <SettingsView onLogout={onLogout} onUpdateProfilePhoto={onUpdateProfilePhoto} user={user} /> : null}
       </View>
     </View>
   );
@@ -631,6 +782,7 @@ function ChatsView({
   messages,
   now,
   onChangeRetention,
+  onDeleteMessages,
   onSelectConversation,
   onSendFile,
   onSendMessage,
@@ -643,6 +795,7 @@ function ChatsView({
   messages: Message[];
   now: number;
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
+  onDeleteMessages: (messageIds: string[]) => Promise<void>;
   onSelectConversation: (conversationId: string) => void;
   onSendFile: (conversationId: string) => Promise<void>;
   onSendMessage: (conversationId: string, text: string) => void;
@@ -665,6 +818,7 @@ function ChatsView({
         messages={messages.filter((message) => message.conversationId === selectedConversation.id)}
         now={now}
         onChangeRetention={onChangeRetention}
+        onDeleteMessages={onDeleteMessages}
         onSendFile={onSendFile}
         onSendMessage={onSendMessage}
         user={user}
@@ -713,7 +867,7 @@ function ConversationList({
                 pressed && styles.pressed,
               ]}
             >
-              <Avatar color={friend?.avatarColor} label={friend?.name ?? '?'} premium={friend?.premium} />
+              <Avatar color={friend?.avatarColor} label={friend?.name ?? '?'} premium={friend?.premium} photoURL={friend?.photoURL} />
               <View style={styles.rowMain}>
                 <View style={styles.rowTop}>
                   <Text numberOfLines={1} style={styles.rowTitle}>
@@ -742,6 +896,7 @@ function ChatPanel({
   messages,
   now,
   onChangeRetention,
+  onDeleteMessages,
   onSendFile,
   onSendMessage,
   user,
@@ -751,22 +906,35 @@ function ChatPanel({
   messages: Message[];
   now: number;
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
+  onDeleteMessages: (messageIds: string[]) => Promise<void>;
   onSendFile: (conversationId: string) => Promise<void>;
   onSendMessage: (conversationId: string, text: string) => void;
   user: User;
 }) {
   const [draft, setDraft] = useState('');
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
 
   const submit = () => {
     onSendMessage(conversation.id, draft);
     setDraft('');
   };
 
+  const toggleMessage = (messageId: string) => {
+    setSelectedMessageIds((current) =>
+      current.includes(messageId) ? current.filter((id) => id !== messageId) : [...current, messageId],
+    );
+  };
+
+  const deleteSelected = async () => {
+    await onDeleteMessages(selectedMessageIds);
+    setSelectedMessageIds([]);
+  };
+
   return (
     <View style={styles.chatPanel}>
       <View style={styles.chatHeader}>
         <View style={styles.chatIdentity}>
-          <Avatar color={friend?.avatarColor} label={friend?.name ?? '?'} premium={friend?.premium} />
+          <Avatar color={friend?.avatarColor} label={friend?.name ?? '?'} premium={friend?.premium} photoURL={friend?.photoURL} />
           <View>
             <Text style={styles.chatTitle}>{friend?.name ?? 'Sohbet'}</Text>
             <Text style={styles.chatStatus}>{statusLabel(friend?.status)} · {friend?.email}</Text>
@@ -797,6 +965,16 @@ function ChatPanel({
         ))}
       </View>
 
+      {selectedMessageIds.length > 0 ? (
+        <View style={styles.selectionBar}>
+          <Text style={styles.selectionText}>{selectedMessageIds.length} mesaj seçildi</Text>
+          <Pressable accessibilityRole="button" onPress={deleteSelected} style={({ pressed }) => [styles.deleteSelectedButton, pressed && styles.pressed]}>
+            <Ionicons color="#ffffff" name="trash-outline" size={17} />
+            <Text style={styles.deleteSelectedText}>Mesajı sil</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       <ScrollView contentContainerStyle={styles.messageStack} showsVerticalScrollIndicator={false}>
         {messages.length === 0 ? (
           <View style={styles.emptyState}>
@@ -811,13 +989,27 @@ function ChatPanel({
             .map((message) => {
               const mine = message.senderId === user.id;
               return (
-                <View key={message.id} style={[styles.messageBubble, mine ? styles.messageMine : styles.messageFriend]}>
+                <Pressable
+                  accessibilityRole="button"
+                  key={message.id}
+                  onLongPress={() => toggleMessage(message.id)}
+                  onPress={() => {
+                    if (selectedMessageIds.length > 0) {
+                      toggleMessage(message.id);
+                    }
+                  }}
+                  style={[
+                    styles.messageBubble,
+                    mine ? styles.messageMine : styles.messageFriend,
+                    selectedMessageIds.includes(message.id) && styles.messageSelected,
+                  ]}
+                >
                   {message.text ? <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.text}</Text> : null}
                   {message.attachment ? <AttachmentCard attachment={message.attachment} mine={mine} /> : null}
                   <Text style={[styles.messageMeta, mine && styles.messageMetaMine]}>
                     {new Date(message.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })} · {formatRemaining(message.expiresAt, now)}
                   </Text>
-                </View>
+                </Pressable>
               );
             })
         )}
@@ -844,11 +1036,13 @@ function ChatPanel({
 }
 
 function FriendsView({
+  allUsers,
   conversations,
   friends,
   onAddFriend,
   onSelectConversation,
 }: {
+  allUsers: User[];
   conversations: Conversation[];
   friends: Friend[];
   onAddFriend: (email: string) => string;
@@ -856,6 +1050,7 @@ function FriendsView({
 }) {
   const [email, setEmail] = useState('');
   const [notice, setNotice] = useState('');
+  const [query, setQuery] = useState('');
 
   const submit = () => {
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -878,6 +1073,14 @@ function FriendsView({
       <View style={styles.addFriendBox}>
         <LabeledInput
           autoCapitalize="none"
+          icon="search-outline"
+          label="Kullanıcı ara"
+          onChangeText={setQuery}
+          placeholder="Ad veya e-posta ara"
+          value={query}
+        />
+        <LabeledInput
+          autoCapitalize="none"
           icon="person-add-outline"
           keyboardType="email-address"
           label="Arkadaş e-postası"
@@ -889,13 +1092,44 @@ function FriendsView({
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
       </View>
 
+      {query.trim() ? (
+        <View style={styles.searchResults}>
+          {allUsers
+            .filter((item) => {
+              const needle = query.trim().toLowerCase();
+              return item.email.toLowerCase().includes(needle) || item.name.toLowerCase().includes(needle);
+            })
+            .slice(0, 8)
+            .map((item) => (
+              <View key={item.id} style={styles.searchRow}>
+                <Avatar color={palette.blue} label={item.name} premium={item.isPremium} photoURL={item.photoURL} />
+                <View style={styles.rowMain}>
+                  <Text style={styles.rowTitle}>{item.name}</Text>
+                  <Text style={styles.rowMessage}>{item.email}</Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setNotice(onAddFriend(item.email));
+                    setQuery('');
+                  }}
+                  style={({ pressed }) => [styles.smallAction, pressed && styles.pressed]}
+                >
+                  <Ionicons color={palette.accent} name="person-add-outline" size={17} />
+                  <Text style={styles.smallActionText}>Ekle</Text>
+                </Pressable>
+              </View>
+            ))}
+        </View>
+      ) : null}
+
       <View style={styles.friendGrid}>
         {friends.map((friend) => {
           const conversation = conversations.find((item) => item.friendId === friend.id);
           return (
             <View key={friend.id} style={styles.friendCard}>
               <View style={styles.friendCardTop}>
-                <Avatar color={friend.avatarColor} label={friend.name} premium={friend.premium} />
+                <Avatar color={friend.avatarColor} label={friend.name} premium={friend.premium} photoURL={friend.photoURL} />
                 <View style={styles.friendInfo}>
                   <Text style={styles.friendName}>{friend.name}</Text>
                   <Text style={styles.friendEmail}>{friend.email}</Text>
@@ -919,6 +1153,114 @@ function FriendsView({
         })}
       </View>
     </ScrollView>
+  );
+}
+
+function AdminView({
+  allUsers,
+  messages,
+  onPurgeDeleted,
+}: {
+  allUsers: User[];
+  messages: Message[];
+  onPurgeDeleted: () => Promise<number>;
+}) {
+  const [leftUserId, setLeftUserId] = useState(allUsers[0]?.id ?? adminUser.id);
+  const [rightUserId, setRightUserId] = useState(allUsers[1]?.id ?? 'ece');
+  const [notice, setNotice] = useState('');
+
+  const leftUser = allUsers.find((item) => item.id === leftUserId);
+  const rightUser = allUsers.find((item) => item.id === rightUserId);
+  const pairMessages = messages
+    .filter((message) => {
+      const participants = [message.senderId, message.receiverId].filter(Boolean);
+      const participantEmails = [message.senderEmail, message.receiverEmail].filter(Boolean);
+      return (
+        (participants.includes(leftUserId) && participants.includes(rightUserId)) ||
+        (leftUser?.email && rightUser?.email && participantEmails.includes(leftUser.email) && participantEmails.includes(rightUser.email))
+      );
+    })
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  const purge = async () => {
+    const count = await onPurgeDeleted();
+    setNotice(`${count} silinmiş mesaj kalıcı olarak temizlendi.`);
+  };
+
+  return (
+    <View style={styles.adminLayout}>
+      <View style={styles.adminUsersPane}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.screenTitle}>Admin</Text>
+          <Text style={styles.screenSubtitle}>Kullanıcı seç, A {'->'} B mesaj geçmişini incele.</Text>
+        </View>
+        <ScrollView contentContainerStyle={styles.listStack} showsVerticalScrollIndicator={false}>
+          {allUsers.map((item) => (
+            <Pressable
+              accessibilityRole="button"
+              key={item.id}
+              onPress={() => setLeftUserId(item.id)}
+              style={[styles.conversationRow, leftUserId === item.id && styles.conversationRowActive]}
+            >
+              <Avatar color={palette.blue} label={item.name} premium={item.isPremium} photoURL={item.photoURL} />
+              <View style={styles.rowMain}>
+                <Text style={styles.rowTitle}>{item.name}</Text>
+                <Text style={styles.rowMessage}>{item.email}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
+
+      <View style={styles.adminMessagesPane}>
+        <View style={styles.adminPairHeader}>
+          <Text style={styles.chatTitle}>{leftUser?.name ?? 'A kullanıcısı'} {'->'} {rightUser?.name ?? 'B kullanıcısı'}</Text>
+          <Pressable accessibilityRole="button" onPress={purge} style={({ pressed }) => [styles.deleteSelectedButton, pressed && styles.pressed]}>
+            <Ionicons color="#ffffff" name="trash-bin-outline" size={17} />
+            <Text style={styles.deleteSelectedText}>Silinmiş mesajları sil</Text>
+          </Pressable>
+        </View>
+        {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+
+        <ScrollView horizontal contentContainerStyle={styles.adminUserRail} showsHorizontalScrollIndicator={false}>
+          {allUsers
+            .filter((item) => item.id !== leftUserId)
+            .map((item) => (
+              <Pressable
+                accessibilityRole="button"
+                key={item.id}
+                onPress={() => setRightUserId(item.id)}
+                style={[styles.retentionButton, rightUserId === item.id && styles.retentionButtonActive]}
+              >
+                <Text style={[styles.retentionText, rightUserId === item.id && styles.retentionTextActive]}>{item.name}</Text>
+              </Pressable>
+            ))}
+        </ScrollView>
+
+        <ScrollView contentContainerStyle={styles.messageStack} showsVerticalScrollIndicator={false}>
+          {pairMessages.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons color={palette.accent} name="file-tray-outline" size={34} />
+              <Text style={styles.emptyTitle}>Bu iki kullanıcı arasında kayıt yok</Text>
+              <Text style={styles.emptyText}>Yeni mesajlar global admin geçmişine işlenir.</Text>
+            </View>
+          ) : (
+            pairMessages.map((message) => (
+              <View key={message.id} style={[styles.adminMessageRow, message.deletedAt ? styles.deletedMessageRow : null]}>
+                <Text style={[styles.messageText, message.deletedAt ? styles.deletedMessageText : null]}>
+                  {message.text || message.attachment?.name || 'Dosya mesajı'}
+                </Text>
+                <Text style={styles.rowMessage}>
+                  {message.senderEmail || message.senderId} {'->'} {message.receiverEmail || message.receiverId || '?'} ·{' '}
+                  {new Date(message.createdAt).toLocaleString('tr-TR')}
+                  {message.deletedAt ? ` · silindi: ${new Date(message.deletedAt).toLocaleString('tr-TR')}` : ''}
+                </Text>
+              </View>
+            ))
+          )}
+        </ScrollView>
+      </View>
+    </View>
   );
 }
 
@@ -962,7 +1304,7 @@ function PremiumView({ onActivatePremium, user }: { onActivatePremium: () => voi
   );
 }
 
-function SettingsView({ onLogout, user }: { onLogout: () => void; user: User }) {
+function SettingsView({ onLogout, onUpdateProfilePhoto, user }: { onLogout: () => void; onUpdateProfilePhoto: () => Promise<void>; user: User }) {
   return (
     <ScrollView contentContainerStyle={styles.page} showsVerticalScrollIndicator={false}>
       <View style={styles.sectionHeader}>
@@ -971,6 +1313,17 @@ function SettingsView({ onLogout, user }: { onLogout: () => void; user: User }) 
       </View>
 
       <View style={styles.settingsPanel}>
+        <View style={styles.profilePreview}>
+          <Avatar color={palette.accent} label={user.name} premium={user.isPremium} photoURL={user.photoURL} />
+          <View style={styles.rowMain}>
+            <Text style={styles.friendName}>{user.name}</Text>
+            <Text style={styles.friendEmail}>{user.email}</Text>
+          </View>
+          <Pressable accessibilityRole="button" onPress={onUpdateProfilePhoto} style={({ pressed }) => [styles.smallAction, pressed && styles.pressed]}>
+            <Ionicons color={palette.accent} name="camera-outline" size={17} />
+            <Text style={styles.smallActionText}>Fotoğraf</Text>
+          </Pressable>
+        </View>
         <SettingsRow icon="mail-outline" label="E-posta" value={user.email} />
         <SettingsRow icon="diamond-outline" label="Plan" value={user.isPremium ? 'Ultra Premium' : 'Standart'} />
         <SettingsRow icon="shield-checkmark-outline" label="Yetki" value={user.isAdmin ? 'Silinemez admin' : 'Kullanıcı'} />
@@ -1028,10 +1381,10 @@ function SegmentButton({ active, label, onPress }: { active: boolean; label: str
   );
 }
 
-function Avatar({ color, label, premium }: { color?: string; label: string; premium?: boolean }) {
+function Avatar({ color, label, premium, photoURL }: { color?: string; label: string; premium?: boolean; photoURL?: string }) {
   return (
     <View style={[styles.avatar, { backgroundColor: color ?? palette.accent }]}>
-      <Text style={styles.avatarText}>{label.slice(0, 1).toUpperCase()}</Text>
+      {photoURL ? <Image source={{ uri: photoURL }} style={styles.avatarImage} /> : <Text style={styles.avatarText}>{label.slice(0, 1).toUpperCase()}</Text>}
       {premium ? (
         <View style={styles.avatarBadge}>
           <Ionicons color="#ffffff" name="diamond" size={10} />
@@ -1399,6 +1752,11 @@ const styles = StyleSheet.create({
     fontSize: 19,
     fontWeight: '900',
   },
+  avatarImage: {
+    borderRadius: 8,
+    height: 48,
+    width: 48,
+  },
   avatarBadge: {
     alignItems: 'center',
     backgroundColor: palette.coral,
@@ -1525,6 +1883,10 @@ const styles = StyleSheet.create({
     maxWidth: '82%',
     padding: 12,
   },
+  messageSelected: {
+    borderColor: palette.warning,
+    borderWidth: 2,
+  },
   messageMine: {
     alignSelf: 'flex-end',
     backgroundColor: palette.accent,
@@ -1584,6 +1946,35 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 12,
   },
+  selectionBar: {
+    alignItems: 'center',
+    backgroundColor: '#fff7ed',
+    borderBottomColor: '#fed7aa',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  selectionText: {
+    color: '#9a3412',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  deleteSelectedButton: {
+    alignItems: 'center',
+    backgroundColor: '#b42318',
+    borderRadius: 8,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  deleteSelectedText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '900',
+  },
   iconButton: {
     alignItems: 'center',
     backgroundColor: palette.accentSoft,
@@ -1642,6 +2033,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     maxWidth: 620,
     padding: 16,
+  },
+  searchResults: {
+    backgroundColor: palette.panel,
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 8,
+    maxWidth: 720,
+    padding: 10,
+  },
+  searchRow: {
+    alignItems: 'center',
+    borderBottomColor: '#edf0f5',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    padding: 10,
   },
   friendGrid: {
     flexDirection: 'row',
@@ -1767,6 +2175,14 @@ const styles = StyleSheet.create({
     maxWidth: 680,
     padding: 8,
   },
+  profilePreview: {
+    alignItems: 'center',
+    borderBottomColor: '#edf0f5',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    padding: 14,
+  },
   settingsRow: {
     alignItems: 'center',
     borderBottomColor: '#edf0f5',
@@ -1801,5 +2217,50 @@ const styles = StyleSheet.create({
     color: '#b42318',
     fontSize: 14,
     fontWeight: '900',
+  },
+  adminLayout: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 18,
+  },
+  adminUsersPane: {
+    maxWidth: 380,
+    minWidth: 280,
+    width: '34%',
+  },
+  adminMessagesPane: {
+    backgroundColor: palette.panel,
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    padding: 14,
+  },
+  adminPairHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  adminUserRail: {
+    gap: 8,
+    paddingBottom: 12,
+  },
+  adminMessageRow: {
+    backgroundColor: '#f7f9fc',
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 6,
+    padding: 12,
+  },
+  deletedMessageRow: {
+    backgroundColor: '#fff1f2',
+    borderColor: '#fda4af',
+  },
+  deletedMessageText: {
+    color: '#9f1239',
+    textDecorationLine: 'line-through',
   },
 });
