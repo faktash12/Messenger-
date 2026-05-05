@@ -261,7 +261,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const variant = args.variant;
   const task = variant === "release" ? "assembleRelease" : "assembleDebug";
-  const appName = process.env.APK_APP_NAME || "Messenger+";
+  const appName = process.env.APK_APP_NAME || "Özlü Sözler";
   const timeZone = process.env.APK_TIMEZONE || "Europe/Istanbul";
   const projectYear = detectProjectYear();
   const currentMonth = getCurrentMonth(timeZone);

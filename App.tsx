@@ -62,11 +62,10 @@ const palette = {
 };
 
 const tabs: Array<{ id: TabId; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
-  { id: 'chats', label: 'Sohbetler', icon: 'chatbubbles-outline' },
+  { id: 'chats', label: 'Sohbet', icon: 'chatbubble-ellipses-outline' },
   { id: 'friends', label: 'Arkadaşlar', icon: 'people-outline' },
-  { id: 'premium', label: 'Ultra', icon: 'diamond-outline' },
+  { id: 'settings', label: 'Ayarlar', icon: 'settings-outline' },
   { id: 'admin', label: 'Admin', icon: 'server-outline' },
-  { id: 'settings', label: 'Ayarlar', icon: 'shield-checkmark-outline' },
 ];
 
 function usesFirebase(user: User | null): user is User {
@@ -101,6 +100,7 @@ export default function App() {
   const [ledgerMessages, setLedgerMessages] = useState<Message[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>('chats');
   const [selectedConversationId, setSelectedConversationId] = useState(initialConversations[0].id);
+  const [openConversationId, setOpenConversationId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -207,6 +207,7 @@ export default function App() {
       setMessages(adminMessages);
       setLedgerMessages(adminMessages);
       setSelectedConversationId(initialConversations[0].id);
+      setOpenConversationId(null);
       setActiveTab('chats');
       return;
     }
@@ -232,7 +233,7 @@ export default function App() {
           <View style={styles.logoMark}>
             <Ionicons color="#ffffff" name="chatbubble-ellipses" size={30} />
           </View>
-          <Text style={styles.brandTitle}>Messenger+</Text>
+          <Text style={styles.brandTitle}>Özlü Sözler</Text>
           <Text style={styles.authTitle}>Firebase oturumu hazırlanıyor</Text>
         </View>
       </>
@@ -253,7 +254,9 @@ export default function App() {
     const existing = friends.find((friend) => friend.email.toLowerCase() === cleanEmail);
 
     if (existing) {
-      setSelectedConversationId(`chat-${existing.id}`);
+      const existingConversationId = conversations.find((conversation) => conversation.friendId === existing.id)?.id ?? `chat-${existing.id}`;
+      setSelectedConversationId(existingConversationId);
+      setOpenConversationId(existingConversationId);
       setActiveTab('chats');
       return 'Bu kişi zaten arkadaş listende.';
     }
@@ -296,6 +299,7 @@ export default function App() {
       saveConversation(user.id, newConversation).catch(() => undefined);
     }
     setSelectedConversationId(newConversation.id);
+    setOpenConversationId(newConversation.id);
     setActiveTab('chats');
     return `${newFriend.name} arkadaş olarak eklendi.`;
   };
@@ -502,13 +506,21 @@ export default function App() {
         }}
         onSelectConversation={(conversationId) => {
           setSelectedConversationId(conversationId);
+          setOpenConversationId(conversationId);
           setActiveTab('chats');
         }}
         onSendFile={sendFile}
         onSendMessage={sendMessage}
-        onSetTab={setActiveTab}
+        onSetTab={(tab) => {
+          setActiveTab(tab);
+          if (tab !== 'chats') {
+            setOpenConversationId(null);
+          }
+        }}
         onPurgeDeleted={purgeDeleted}
         onUpdateProfilePhoto={updateProfilePhoto}
+        openConversationId={openConversationId}
+        onCloseConversation={() => setOpenConversationId(null)}
         selectedConversationId={selectedConversationId}
         allUsers={allUsers}
         ledgerMessages={ledgerMessages}
@@ -577,7 +589,7 @@ function AuthScreen({
         <View style={styles.logoMark}>
           <Ionicons color="#ffffff" name="chatbubble-ellipses" size={30} />
         </View>
-        <Text style={styles.brandTitle}>Messenger+</Text>
+        <Text style={styles.brandTitle}>Özlü Sözler</Text>
         <Text style={styles.authTitle}>Ultra güvenli, süreli mesajlaşma</Text>
       </View>
 
@@ -624,19 +636,6 @@ function AuthScreen({
           label={submitting ? 'Bağlanıyor...' : mode === 'register' ? 'Hesap oluştur' : 'Giriş yap'}
           onPress={submit}
         />
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            setMode('login');
-            setEmail(adminCredentials.email);
-            setPassword(adminCredentials.password);
-            setNotice('Korumalı admin hesabı hazır: faktash@yahoo.com / faktas12');
-          }}
-          style={({ pressed }) => [styles.demoButton, pressed && styles.pressed]}
-        >
-          <Ionicons color={palette.accent} name="flash-outline" size={18} />
-          <Text style={styles.demoButtonText}>Admin bilgilerini doldur</Text>
-        </Pressable>
       </View>
     </KeyboardAvoidingView>
   );
@@ -655,12 +654,14 @@ function AppShell({
   onChangeRetention,
   onDeleteMessages,
   onLogout,
+  onCloseConversation,
   onPurgeDeleted,
   onSelectConversation,
   onSendFile,
   onSendMessage,
   onSetTab,
   onUpdateProfilePhoto,
+  openConversationId,
   selectedConversationId,
   user,
 }: {
@@ -676,29 +677,36 @@ function AppShell({
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
   onDeleteMessages: (messageIds: string[]) => Promise<void>;
   onLogout: () => void;
+  onCloseConversation: () => void;
   onPurgeDeleted: () => Promise<number>;
   onSelectConversation: (conversationId: string) => void;
   onSendFile: (conversationId: string) => Promise<void>;
   onSendMessage: (conversationId: string, text: string) => void;
   onSetTab: (tab: TabId) => void;
   onUpdateProfilePhoto: () => Promise<void>;
+  openConversationId: string | null;
   selectedConversationId: string;
   user: User;
 }) {
   const { width } = useWindowDimensions();
   const isWide = width >= 900;
-  const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? conversations[0];
+  const activeConversationId = openConversationId ?? selectedConversationId;
+  const selectedConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
 
   return (
-    <View style={styles.root}>
-      <View style={[styles.sidebar, !isWide && styles.mobileHeader]}>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={0}
+      style={styles.root}
+    >
+      <View style={styles.topBar}>
         <View style={styles.userBlock}>
           <View style={styles.logoMarkSmall}>
             <Ionicons color="#ffffff" name="chatbubble-ellipses" size={20} />
           </View>
           <View style={styles.userText}>
             <Text numberOfLines={1} style={styles.appName}>
-              Messenger+
+              Özlü Sözler
             </Text>
             <Text numberOfLines={1} style={styles.userEmail}>
               {user.email}
@@ -710,33 +718,10 @@ function AppShell({
             </View>
           ) : null}
         </View>
-
-        <View style={[styles.nav, !isWide && styles.navMobile]}>
-          {tabs.filter((tab) => tab.id !== 'admin' || user.isAdmin).map((tab) => (
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: activeTab === tab.id }}
-              key={tab.id}
-              onPress={() => onSetTab(tab.id)}
-              style={({ pressed }) => [
-                styles.navItem,
-                activeTab === tab.id && styles.navItemActive,
-                !isWide && styles.navItemMobile,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Ionicons color={activeTab === tab.id ? '#ffffff' : palette.muted} name={tab.icon} size={20} />
-              <Text style={[styles.navLabel, activeTab === tab.id && styles.navLabelActive]}>{tab.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-
-        {isWide ? (
-          <Pressable accessibilityRole="button" onPress={onLogout} style={({ pressed }) => [styles.logoutButton, pressed && styles.pressed]}>
-            <Ionicons color={palette.muted} name="log-out-outline" size={19} />
-            <Text style={styles.logoutText}>Çıkış</Text>
-          </Pressable>
-        ) : null}
+        <Pressable accessibilityRole="button" onPress={onLogout} style={({ pressed }) => [styles.logoutButton, pressed && styles.pressed]}>
+          <Ionicons color={palette.muted} name="log-out-outline" size={19} />
+          {isWide ? <Text style={styles.logoutText}>Çıkış</Text> : null}
+        </Pressable>
       </View>
 
       <View style={styles.content}>
@@ -748,10 +733,12 @@ function AppShell({
             messages={messages}
             now={now}
             onChangeRetention={onChangeRetention}
+            onCloseConversation={onCloseConversation}
             onSelectConversation={onSelectConversation}
             onSendFile={onSendFile}
             onSendMessage={onSendMessage}
             onDeleteMessages={onDeleteMessages}
+            openConversationId={openConversationId}
             selectedConversation={selectedConversation}
             user={user}
           />
@@ -771,7 +758,26 @@ function AppShell({
         {activeTab === 'premium' ? <PremiumView onActivatePremium={onActivatePremium} user={user} /> : null}
         {activeTab === 'settings' ? <SettingsView onLogout={onLogout} onUpdateProfilePhoto={onUpdateProfilePhoto} user={user} /> : null}
       </View>
-    </View>
+
+      <View style={styles.bottomTabs}>
+        {tabs.filter((tab) => tab.id !== 'admin' || user.isAdmin).map((tab) => (
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === tab.id }}
+            key={tab.id}
+            onPress={() => onSetTab(tab.id)}
+            style={({ pressed }) => [
+              styles.bottomTabItem,
+              activeTab === tab.id && styles.bottomTabItemActive,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Ionicons color={activeTab === tab.id ? palette.accent : palette.muted} name={tab.icon} size={22} />
+            <Text style={[styles.bottomTabLabel, activeTab === tab.id && styles.bottomTabLabelActive]}>{tab.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -782,10 +788,12 @@ function ChatsView({
   messages,
   now,
   onChangeRetention,
+  onCloseConversation,
   onDeleteMessages,
   onSelectConversation,
   onSendFile,
   onSendMessage,
+  openConversationId,
   selectedConversation,
   user,
 }: {
@@ -795,34 +803,43 @@ function ChatsView({
   messages: Message[];
   now: number;
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
+  onCloseConversation: () => void;
   onDeleteMessages: (messageIds: string[]) => Promise<void>;
   onSelectConversation: (conversationId: string) => void;
   onSendFile: (conversationId: string) => Promise<void>;
   onSendMessage: (conversationId: string, text: string) => void;
+  openConversationId: string | null;
   selectedConversation: Conversation;
   user: User;
 }) {
+  const showChat = Boolean(openConversationId);
+
   return (
     <View style={[styles.chatLayout, !isWide && styles.chatLayoutMobile]}>
-      <ConversationList
-        conversations={conversations}
-        friends={friends}
-        messages={messages}
-        now={now}
-        onSelectConversation={onSelectConversation}
-        selectedConversationId={selectedConversation.id}
-      />
-      <ChatPanel
-        conversation={selectedConversation}
-        friend={friends.find((friend) => friend.id === selectedConversation.friendId)}
-        messages={messages.filter((message) => message.conversationId === selectedConversation.id)}
-        now={now}
-        onChangeRetention={onChangeRetention}
-        onDeleteMessages={onDeleteMessages}
-        onSendFile={onSendFile}
-        onSendMessage={onSendMessage}
-        user={user}
-      />
+      {!showChat ? (
+        <ConversationList
+          conversations={conversations}
+          friends={friends}
+          messages={messages}
+          now={now}
+          onSelectConversation={onSelectConversation}
+          selectedConversationId={selectedConversation.id}
+        />
+      ) : null}
+      {showChat ? (
+        <ChatPanel
+          conversation={selectedConversation}
+          friend={friends.find((friend) => friend.id === selectedConversation.friendId)}
+          messages={messages.filter((message) => message.conversationId === selectedConversation.id)}
+          now={now}
+          onBack={onCloseConversation}
+          onChangeRetention={onChangeRetention}
+          onDeleteMessages={onDeleteMessages}
+          onSendFile={onSendFile}
+          onSendMessage={onSendMessage}
+          user={user}
+        />
+      ) : null}
     </View>
   );
 }
@@ -895,6 +912,7 @@ function ChatPanel({
   friend,
   messages,
   now,
+  onBack,
   onChangeRetention,
   onDeleteMessages,
   onSendFile,
@@ -905,6 +923,7 @@ function ChatPanel({
   friend?: Friend;
   messages: Message[];
   now: number;
+  onBack: () => void;
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
   onDeleteMessages: (messageIds: string[]) => Promise<void>;
   onSendFile: (conversationId: string) => Promise<void>;
@@ -934,6 +953,9 @@ function ChatPanel({
     <View style={styles.chatPanel}>
       <View style={styles.chatHeader}>
         <View style={styles.chatIdentity}>
+          <Pressable accessibilityRole="button" onPress={onBack} style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}>
+            <Ionicons color={palette.accent} name="chevron-back" size={22} />
+          </Pressable>
           <Avatar color={friend?.avatarColor} label={friend?.name ?? '?'} premium={friend?.premium} photoURL={friend?.photoURL} />
           <View>
             <Text style={styles.chatTitle}>{friend?.name ?? 'Sohbet'}</Text>
@@ -975,7 +997,7 @@ function ChatPanel({
         </View>
       ) : null}
 
-      <ScrollView contentContainerStyle={styles.messageStack} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.messageStack} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={styles.messageScroller}>
         {messages.length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons color={palette.accent} name="timer-outline" size={34} />
@@ -1123,11 +1145,11 @@ function FriendsView({
         </View>
       ) : null}
 
-      <View style={styles.friendGrid}>
+      <View style={styles.friendList}>
         {friends.map((friend) => {
           const conversation = conversations.find((item) => item.friendId === friend.id);
           return (
-            <View key={friend.id} style={styles.friendCard}>
+            <View key={friend.id} style={styles.friendRow}>
               <View style={styles.friendCardTop}>
                 <Avatar color={friend.avatarColor} label={friend.name} premium={friend.premium} photoURL={friend.photoURL} />
                 <View style={styles.friendInfo}>
@@ -1171,6 +1193,8 @@ function AdminView({
 
   const leftUser = allUsers.find((item) => item.id === leftUserId);
   const rightUser = allUsers.find((item) => item.id === rightUserId);
+  const deletedMessageCount = messages.filter((message) => message.deletedAt).length;
+  const activeMessageCount = messages.length - deletedMessageCount;
   const pairMessages = messages
     .filter((message) => {
       const participants = [message.senderId, message.receiverId].filter(Boolean);
@@ -1192,8 +1216,23 @@ function AdminView({
       <View style={styles.adminUsersPane}>
         <View style={styles.sectionHeader}>
           <Text style={styles.screenTitle}>Admin</Text>
-          <Text style={styles.screenSubtitle}>Kullanıcı seç, A {'->'} B mesaj geçmişini incele.</Text>
+          <Text style={styles.screenSubtitle}>Kullanıcı istatistikleri, yönetim ve A {'->'} B mesaj geçmişi.</Text>
         </View>
+        <View style={styles.adminStats}>
+          <View style={styles.adminStatCard}>
+            <Text style={styles.adminStatValue}>{allUsers.length}</Text>
+            <Text style={styles.adminStatLabel}>Toplam kullanıcı</Text>
+          </View>
+          <View style={styles.adminStatCard}>
+            <Text style={styles.adminStatValue}>{activeMessageCount}</Text>
+            <Text style={styles.adminStatLabel}>Aktif mesaj</Text>
+          </View>
+          <View style={styles.adminStatCard}>
+            <Text style={styles.adminStatValue}>{deletedMessageCount}</Text>
+            <Text style={styles.adminStatLabel}>Silinmiş mesaj</Text>
+          </View>
+        </View>
+        <Text style={styles.paneTitle}>Kullanıcıları yönet</Text>
         <ScrollView contentContainerStyle={styles.listStack} showsVerticalScrollIndicator={false}>
           {allUsers.map((item) => (
             <Pressable
@@ -1266,7 +1305,7 @@ function AdminView({
 
 function PremiumView({ onActivatePremium, user }: { onActivatePremium: () => void; user: User }) {
   const features = [
-    ['Kaybolan sohbet', '1 dakika ile 1 hafta arasında arkadaş bazlı saklama.'],
+    ['Kaybolan sohbet', '1 dakika ile süresiz arasında arkadaş bazlı saklama.'],
     ['Büyük dosya paylaşımı', 'Web ve Android uyumlu belge gönderimi.'],
     ['Öncelikli gizlilik', 'Kilitli oturum, süre rozeti ve temiz geçmiş akışı.'],
     ['Ultra profil', 'Sohbetlerde premium elmas işareti.'],
@@ -1442,7 +1481,7 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: palette.soft,
-    flexDirection: 'row',
+    flexDirection: 'column',
   },
   authRoot: {
     alignItems: 'center',
@@ -1587,6 +1626,17 @@ const styles = StyleSheet.create({
   pressed: {
     opacity: 0.78,
   },
+  topBar: {
+    alignItems: 'center',
+    backgroundColor: palette.panel,
+    borderBottomColor: palette.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
   sidebar: {
     backgroundColor: palette.panel,
     borderRightColor: palette.border,
@@ -1691,21 +1741,49 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    padding: 20,
+    padding: 14,
+  },
+  bottomTabs: {
+    alignItems: 'center',
+    backgroundColor: palette.panel,
+    borderTopColor: palette.border,
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingBottom: Platform.OS === 'ios' ? 18 : 8,
+    paddingHorizontal: 8,
+    paddingTop: 8,
+  },
+  bottomTabItem: {
+    alignItems: 'center',
+    borderRadius: 8,
+    flex: 1,
+    gap: 3,
+    minHeight: 48,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  bottomTabItemActive: {
+    backgroundColor: palette.accentSoft,
+  },
+  bottomTabLabel: {
+    color: palette.muted,
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  bottomTabLabelActive: {
+    color: palette.accent,
   },
   chatLayout: {
     flex: 1,
-    flexDirection: 'row',
-    gap: 18,
+    flexDirection: 'column',
   },
   chatLayoutMobile: {
     flexDirection: 'column',
-    paddingTop: 114,
   },
   conversationList: {
-    maxWidth: 390,
-    minWidth: 300,
-    width: '32%',
+    flex: 1,
+    width: '100%',
   },
   sectionHeader: {
     marginBottom: 16,
@@ -1809,6 +1887,14 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
   },
+  backButton: {
+    alignItems: 'center',
+    backgroundColor: palette.accentSoft,
+    borderRadius: 8,
+    height: 38,
+    justifyContent: 'center',
+    width: 38,
+  },
   chatHeader: {
     alignItems: 'center',
     borderBottomColor: palette.border,
@@ -1877,6 +1963,10 @@ const styles = StyleSheet.create({
   messageStack: {
     gap: 10,
     padding: 16,
+    paddingBottom: 24,
+  },
+  messageScroller: {
+    flex: 1,
   },
   messageBubble: {
     borderRadius: 8,
@@ -1944,7 +2034,9 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     flexDirection: 'row',
     gap: 10,
-    padding: 12,
+    paddingBottom: Platform.OS === 'android' ? 18 : 12,
+    paddingHorizontal: 12,
+    paddingTop: 12,
   },
   selectionBar: {
     alignItems: 'center',
@@ -2055,6 +2147,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 12,
+  },
+  friendList: {
+    gap: 10,
+    maxWidth: 820,
+  },
+  friendRow: {
+    alignItems: 'center',
+    backgroundColor: palette.panel,
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    padding: 14,
   },
   friendCard: {
     backgroundColor: palette.panel,
@@ -2227,6 +2334,34 @@ const styles = StyleSheet.create({
     maxWidth: 380,
     minWidth: 280,
     width: '34%',
+  },
+  adminStats: {
+    gap: 8,
+    marginBottom: 12,
+  },
+  adminStatCard: {
+    backgroundColor: palette.panel,
+    borderColor: palette.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 12,
+  },
+  adminStatValue: {
+    color: palette.accent,
+    fontSize: 24,
+    fontWeight: '900',
+  },
+  adminStatLabel: {
+    color: palette.muted,
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  paneTitle: {
+    color: palette.ink,
+    fontSize: 15,
+    fontWeight: '900',
+    marginBottom: 10,
   },
   adminMessagesPane: {
     backgroundColor: palette.panel,

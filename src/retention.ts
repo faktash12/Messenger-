@@ -1,5 +1,7 @@
 import type { RetentionId } from './types';
 
+const foreverMilliseconds = 100 * 365 * 24 * 60 * 60 * 1000;
+
 export const retentionOptions: Array<{
   id: RetentionId;
   label: string;
@@ -10,7 +12,7 @@ export const retentionOptions: Array<{
   { id: '10m', label: '10 dakika', shortLabel: '10 dk', milliseconds: 10 * 60 * 1000 },
   { id: '1h', label: '1 saat', shortLabel: '1 saat', milliseconds: 60 * 60 * 1000 },
   { id: '1d', label: '1 gün', shortLabel: '1 gün', milliseconds: 24 * 60 * 60 * 1000 },
-  { id: '1w', label: '1 hafta', shortLabel: '1 hafta', milliseconds: 7 * 24 * 60 * 60 * 1000 },
+  { id: 'forever', label: 'Süresiz', shortLabel: 'Süresiz', milliseconds: foreverMilliseconds },
 ];
 
 export function getRetention(retentionId: RetentionId) {
@@ -19,6 +21,10 @@ export function getRetention(retentionId: RetentionId) {
 
 export function formatRemaining(expiresAt: number, now: number) {
   const remaining = Math.max(0, expiresAt - now);
+  if (remaining > foreverMilliseconds / 2) {
+    return 'Süresiz';
+  }
+
   const minutes = Math.ceil(remaining / 60000);
 
   if (minutes < 60) {

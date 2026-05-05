@@ -39,19 +39,28 @@ function withoutUndefined<T>(value: T): T {
 export async function upsertUserProfile(firebaseUser: FirebaseUser, displayName?: string): Promise<User> {
   const user: User = {
     id: firebaseUser.uid,
-    name: displayName?.trim() || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Messenger Kullanıcı',
+    name: displayName?.trim() || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Özlü Sözler Kullanıcısı',
     email: firebaseUser.email || '',
     isPremium: true,
     photoURL: firebaseUser.photoURL || undefined,
   };
 
-  await setDoc(doc(firestore, usersPath, user.id), withoutUndefined(user), { merge: true });
-  await seedInitialData(user.id);
+  try {
+    await setDoc(doc(firestore, usersPath, user.id), withoutUndefined(user), { merge: true });
+    await seedInitialData(user.id);
+  } catch {
+    return user;
+  }
+
   return user;
 }
 
 export async function seedInitialData(userId: string) {
-  const conversationsSnapshot = await getDocs(collection(firestore, usersPath, userId, 'conversations'));
+  const conversationsSnapshot = await getDocs(collection(firestore, usersPath, userId, 'conversations')).catch(() => null);
+  if (!conversationsSnapshot) {
+    return;
+  }
+
   if (!conversationsSnapshot.empty) {
     return;
   }
@@ -74,33 +83,53 @@ export async function seedInitialData(userId: string) {
 }
 
 export function subscribeFriends(userId: string, onChange: (friends: Friend[]) => void) {
-  return onSnapshot(collection(firestore, usersPath, userId, 'friends'), (snapshot) => {
-    onChange(snapshot.docs.map((item) => item.data() as Friend));
-  });
+  return onSnapshot(
+    collection(firestore, usersPath, userId, 'friends'),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => item.data() as Friend));
+    },
+    () => undefined,
+  );
 }
 
 export function subscribeConversations(userId: string, onChange: (conversations: Conversation[]) => void) {
-  return onSnapshot(collection(firestore, usersPath, userId, 'conversations'), (snapshot) => {
-    onChange(snapshot.docs.map((item) => item.data() as Conversation));
-  });
+  return onSnapshot(
+    collection(firestore, usersPath, userId, 'conversations'),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => item.data() as Conversation));
+    },
+    () => undefined,
+  );
 }
 
 export function subscribeMessages(userId: string, onChange: (messages: Message[]) => void) {
-  return onSnapshot(collection(firestore, usersPath, userId, 'messages'), (snapshot) => {
-    onChange(snapshot.docs.map((item) => item.data() as Message));
-  });
+  return onSnapshot(
+    collection(firestore, usersPath, userId, 'messages'),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => item.data() as Message));
+    },
+    () => undefined,
+  );
 }
 
 export function subscribeAllUsers(onChange: (users: User[]) => void) {
-  return onSnapshot(collection(firestore, usersPath), (snapshot) => {
-    onChange(snapshot.docs.map((item) => item.data() as User));
-  });
+  return onSnapshot(
+    collection(firestore, usersPath),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => item.data() as User));
+    },
+    () => undefined,
+  );
 }
 
 export function subscribeLedgerMessages(onChange: (messages: Message[]) => void) {
-  return onSnapshot(collection(firestore, ledgerPath), (snapshot) => {
-    onChange(snapshot.docs.map((item) => item.data() as Message));
-  });
+  return onSnapshot(
+    collection(firestore, ledgerPath),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => item.data() as Message));
+    },
+    () => undefined,
+  );
 }
 
 export async function saveFriend(userId: string, friend: Friend) {
