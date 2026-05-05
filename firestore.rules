@@ -1,0 +1,60 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owns(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return signedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if owns(userId);
+      allow update: if owns(userId) || isAdmin();
+      allow delete: if isAdmin() && userId != request.auth.uid;
+
+      match /friends/{friendId} {
+        allow read, delete: if owns(userId);
+        allow create, update: if owns(userId) || (signedIn() && friendId == request.auth.uid);
+      }
+
+      match /conversations/{conversationId} {
+        allow read, delete: if owns(userId);
+        allow create, update: if owns(userId) || (signedIn() && request.resource.data.friendId == request.auth.uid);
+      }
+
+      match /messages/{messageId} {
+        allow read, delete: if owns(userId);
+        allow create, update: if owns(userId) ||
+          (
+            signedIn() &&
+            request.resource.data.senderId == request.auth.uid &&
+            request.resource.data.receiverId == userId
+          );
+      }
+    }
+
+    match /messageLedger/{messageId} {
+      allow read: if signedIn() &&
+        (
+          isAdmin() ||
+          resource.data.senderId == request.auth.uid ||
+          resource.data.receiverId == request.auth.uid
+        );
+      allow create, update: if signedIn() &&
+        (
+          request.resource.data.senderId == request.auth.uid ||
+          request.resource.data.receiverId == request.auth.uid
+        );
+      allow delete: if isAdmin();
+    }
+  }
+}

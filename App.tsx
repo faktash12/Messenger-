@@ -28,6 +28,7 @@ import {
   purgeExpiredDeletedMessages,
   saveConversation,
   saveFriend,
+  saveIncomingMessage,
   saveMessage,
   softDeleteMessages,
   subscribeAllUsers,
@@ -41,7 +42,7 @@ import {
   uploadProfilePhoto,
   upsertUserProfile,
 } from './src/chatStore';
-import { adminCredentials, adminUser, demoUser, directory, initialConversations, initialFriends, initialMessages } from './src/data';
+import { adminCredentials, adminUser, directory, initialConversations, initialFriends, initialMessages } from './src/data';
 import { auth } from './src/firebase';
 import { formatRemaining, getRetention, retentionOptions } from './src/retention';
 import type { Conversation, Friend, Message, RetentionId, TabId, User } from './src/types';
@@ -107,6 +108,12 @@ export default function App() {
     return onAuthStateChanged(auth, async (firebaseUser) => {
       try {
         if (firebaseUser) {
+          setFriends([]);
+          setConversations([]);
+          setMessages([]);
+          setLedgerMessages([]);
+          setSelectedConversationId('');
+          setOpenConversationId(null);
           const profile = await upsertUserProfile(firebaseUser);
           setUser(profile);
         } else {
@@ -129,6 +136,9 @@ export default function App() {
         setConversations(items);
         if (items.length > 0 && !items.some((item) => item.id === selectedConversationId)) {
           setSelectedConversationId(items[0].id);
+        } else if (items.length === 0) {
+          setSelectedConversationId('');
+          setOpenConversationId(null);
         }
       }),
       subscribeMessages(user.id, setMessages),
@@ -195,6 +205,37 @@ export default function App() {
     password: string;
   }) => {
     if (cleanEmail === adminCredentials.email && password === adminCredentials.password) {
+      try {
+        let credential;
+        try {
+          credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '';
+          if (!message.includes('auth/user-not-found') && !message.includes('auth/invalid-credential')) {
+            throw error;
+          }
+          credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+        }
+
+        await updateProfile(credential.user, { displayName: adminUser.name }).catch(() => undefined);
+        const profile = await upsertUserProfile(credential.user, adminUser.name, {
+          isAdmin: true,
+          isPremium: true,
+          protectedAccount: true,
+        });
+        setUser({ ...profile, isAdmin: true, protectedAccount: true });
+        setFriends([]);
+        setConversations([]);
+        setMessages([]);
+        setLedgerMessages([]);
+        setSelectedConversationId('');
+        setOpenConversationId(null);
+        setActiveTab('admin');
+        return;
+      } catch {
+        // Firebase admin oturumu kurulamazsa uygulama içi korumalı admin açık kalır.
+      }
+
       setUser(adminUser);
       setAllUsers([
         adminUser,
@@ -259,7 +300,7 @@ export default function App() {
     );
   }
 
-  const addFriend = (email: string) => {
+  const addFriend = (email: string, openChat = true) => {
     const cleanEmail = email.trim().toLowerCase();
     const existing = friends.find((friend) => friend.email.toLowerCase() === cleanEmail);
 
@@ -277,9 +318,11 @@ export default function App() {
           saveConversation(user.id, conversation).catch(() => undefined);
         }
       }
-      setSelectedConversationId(conversation.id);
-      setOpenConversationId(conversation.id);
-      setActiveTab('chats');
+      if (openChat) {
+        setSelectedConversationId(conversation.id);
+        setOpenConversationId(conversation.id);
+        setActiveTab('chats');
+      }
       return 'Bu kişi zaten arkadaş listende.';
     }
 
@@ -319,10 +362,26 @@ export default function App() {
     if (usesFirebase(user)) {
       saveFriend(user.id, newFriend).catch(() => undefined);
       saveConversation(user.id, newConversation).catch(() => undefined);
+      if (registeredUser) {
+        const reciprocalFriend: Friend = {
+          id: user.id,
+          userId: user.id,
+          name: user.name,
+          email: user.email,
+          status: 'online',
+          avatarColor: palette.accent,
+          premium: user.isPremium,
+          photoURL: user.photoURL,
+        };
+        saveFriend(registeredUser.id, reciprocalFriend).catch(() => undefined);
+        saveConversation(registeredUser.id, { ...newConversation, friendId: user.id }).catch(() => undefined);
+      }
     }
-    setSelectedConversationId(newConversation.id);
-    setOpenConversationId(newConversation.id);
-    setActiveTab('chats');
+    if (openChat) {
+      setSelectedConversationId(newConversation.id);
+      setOpenConversationId(newConversation.id);
+      setActiveTab('chats');
+    }
     return `${newFriend.name} arkadaş olarak eklendi.`;
   };
 
@@ -353,6 +412,9 @@ export default function App() {
     setMessages((current) => [...current, nextMessage]);
     if (usesFirebase(user)) {
       saveMessage(user.id, nextMessage).catch(() => undefined);
+      if (friend?.userId) {
+        saveIncomingMessage(friend.userId, user, conversation, nextMessage).catch(() => undefined);
+      }
     }
   };
 
@@ -401,9 +463,16 @@ export default function App() {
     if (usesFirebase(user)) {
       try {
         const uploadedAttachment = await uploadAttachment(user.id, conversationId, localAttachment);
-        await saveMessage(user.id, { ...nextMessage, attachment: uploadedAttachment });
+        const uploadedMessage = { ...nextMessage, attachment: uploadedAttachment };
+        await saveMessage(user.id, uploadedMessage);
+        if (friend?.userId) {
+          await saveIncomingMessage(friend.userId, user, conversation, uploadedMessage).catch(() => undefined);
+        }
       } catch {
         await saveMessage(user.id, nextMessage);
+        if (friend?.userId) {
+          await saveIncomingMessage(friend.userId, user, conversation, nextMessage).catch(() => undefined);
+        }
       }
     }
   };
@@ -724,7 +793,7 @@ function AppShell({
   messages: Message[];
   now: number;
   onActivatePremium: () => void;
-  onAddFriend: (email: string) => string;
+  onAddFriend: (email: string, openChat?: boolean) => string;
   onChangeRetention: (conversationId: string, retentionId: RetentionId) => void;
   onDeleteMessages: (messageIds: string[]) => Promise<void>;
   onDeleteAdminUser: (targetUser: User) => Promise<string>;
@@ -1134,23 +1203,27 @@ function FriendsView({
   allUsers: User[];
   conversations: Conversation[];
   friends: Friend[];
-  onAddFriend: (email: string) => string;
+  onAddFriend: (email: string, openChat?: boolean) => string;
   onSelectConversation: (conversationId: string) => void;
 }) {
   const [email, setEmail] = useState('');
   const [notice, setNotice] = useState('');
-  const [query, setQuery] = useState('');
+  const [searchedEmail, setSearchedEmail] = useState('');
 
-  const submit = () => {
+  const search = () => {
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
     if (!validEmail) {
       setNotice('Geçerli bir e-posta adresi gir.');
       return;
     }
 
-    setNotice(onAddFriend(email));
-    setEmail('');
+    setSearchedEmail(email.trim().toLowerCase());
+    setNotice('');
   };
+
+  const searchResults = searchedEmail
+    ? allUsers.filter((item) => item.email.toLowerCase().includes(searchedEmail)).slice(0, 5)
+    : [];
 
   return (
     <ScrollView contentContainerStyle={styles.page} showsVerticalScrollIndicator={false}>
@@ -1162,34 +1235,30 @@ function FriendsView({
       <View style={styles.addFriendBox}>
         <LabeledInput
           autoCapitalize="none"
-          icon="search-outline"
-          label="Kullanıcı ara"
-          onChangeText={setQuery}
-          placeholder="Ad veya e-posta ara"
-          value={query}
-        />
-        <LabeledInput
-          autoCapitalize="none"
           icon="person-add-outline"
           keyboardType="email-address"
-          label="Arkadaş e-postası"
-          onChangeText={setEmail}
-          placeholder="ece@example.com"
+          label="E-posta"
+          onChangeText={(value) => {
+            setEmail(value);
+            setSearchedEmail('');
+          }}
+          placeholder="kullanici@mail.com"
           value={email}
         />
-        <PrimaryButton icon="person-add" label="Arkadaş ekle" onPress={submit} />
+        <PrimaryButton icon="search" label="Ara" onPress={search} />
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
       </View>
 
-      {query.trim() ? (
+      {searchedEmail ? (
         <View style={styles.searchResults}>
-          {allUsers
-            .filter((item) => {
-              const needle = query.trim().toLowerCase();
-              return item.email.toLowerCase().includes(needle) || item.name.toLowerCase().includes(needle);
-            })
-            .slice(0, 8)
-            .map((item) => (
+          {searchResults.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons color={palette.accent} name="search-outline" size={34} />
+              <Text style={styles.emptyTitle}>Kullanıcı bulunamadı</Text>
+              <Text style={styles.emptyText}>Bu e-posta ile kayıtlı kullanıcı Firestore users listesinde görünmüyor.</Text>
+            </View>
+          ) : null}
+          {searchResults.map((item) => (
               <View key={item.id} style={styles.searchRow}>
                 <Avatar color={palette.blue} label={item.name} premium={item.isPremium} photoURL={item.photoURL} />
                 <View style={styles.rowMain}>
@@ -1200,24 +1269,22 @@ function FriendsView({
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => {
-                      setNotice(onAddFriend(item.email));
-                      setQuery('');
+                      setNotice(onAddFriend(item.email, false));
                     }}
                     style={({ pressed }) => [styles.smallAction, pressed && styles.pressed]}
                   >
                     <Ionicons color={palette.accent} name="person-add-outline" size={17} />
-                    <Text style={styles.smallActionText}>Ekle</Text>
+                    <Text style={styles.smallActionText}>Arkadaşı ekle</Text>
                   </Pressable>
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => {
-                      setQuery('');
-                      setNotice('Arama geri alındı.');
+                      setNotice(onAddFriend(item.email, true));
                     }}
                     style={({ pressed }) => [styles.outlineAction, pressed && styles.pressed]}
                   >
-                    <Ionicons color={palette.muted} name="arrow-undo-outline" size={17} />
-                    <Text style={styles.outlineActionText}>Geri al</Text>
+                    <Ionicons color={palette.muted} name="chatbubble-outline" size={17} />
+                    <Text style={styles.outlineActionText}>Mesaj gönder</Text>
                   </Pressable>
                 </View>
               </View>

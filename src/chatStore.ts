@@ -12,7 +12,6 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import type { User as FirebaseUser } from 'firebase/auth';
 
-import { initialConversations, initialFriends, initialMessages } from './data';
 import { firestore, storage } from './firebase';
 import type { Attachment, Conversation, Friend, Message, User } from './types';
 
@@ -36,50 +35,18 @@ function withoutUndefined<T>(value: T): T {
   return value;
 }
 
-export async function upsertUserProfile(firebaseUser: FirebaseUser, displayName?: string): Promise<User> {
+export async function upsertUserProfile(firebaseUser: FirebaseUser, displayName?: string, patch?: Partial<User>): Promise<User> {
   const user: User = {
     id: firebaseUser.uid,
     name: displayName?.trim() || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Özlü Sözler Kullanıcısı',
     email: firebaseUser.email || '',
     isPremium: true,
     photoURL: firebaseUser.photoURL || undefined,
+    ...patch,
   };
 
-  try {
-    await setDoc(doc(firestore, usersPath, user.id), withoutUndefined(user), { merge: true });
-    await seedInitialData(user.id);
-  } catch {
-    return user;
-  }
-
+  await setDoc(doc(firestore, usersPath, user.id), withoutUndefined(user), { merge: true });
   return user;
-}
-
-export async function seedInitialData(userId: string) {
-  const conversationsSnapshot = await getDocs(collection(firestore, usersPath, userId, 'conversations')).catch(() => null);
-  if (!conversationsSnapshot) {
-    return;
-  }
-
-  if (!conversationsSnapshot.empty) {
-    return;
-  }
-
-  const batch = writeBatch(firestore);
-  initialFriends.forEach((friend) => {
-    batch.set(doc(firestore, usersPath, userId, 'friends', friend.id), withoutUndefined(friend));
-  });
-  initialConversations.forEach((conversation) => {
-    batch.set(doc(firestore, usersPath, userId, 'conversations', conversation.id), withoutUndefined(conversation));
-  });
-  initialMessages.forEach((message) => {
-    batch.set(doc(firestore, usersPath, userId, 'messages', message.id), withoutUndefined({
-      ...message,
-      senderId: message.senderId === 'me' ? userId : message.senderId,
-    }));
-  });
-
-  await batch.commit();
 }
 
 export function subscribeFriends(userId: string, onChange: (friends: Friend[]) => void) {
@@ -144,6 +111,31 @@ export async function saveMessage(userId: string, message: Message) {
   const cleanMessage = withoutUndefined(message);
   await setDoc(doc(firestore, usersPath, userId, 'messages', message.id), cleanMessage, { merge: true });
   await setDoc(doc(firestore, ledgerPath, message.id), cleanMessage, { merge: true });
+}
+
+export async function saveIncomingMessage(receiverUserId: string, sender: User, conversation: Conversation, message: Message) {
+  const senderFriend: Friend = {
+    id: sender.id,
+    userId: sender.id,
+    name: sender.name,
+    email: sender.email,
+    status: 'online',
+    avatarColor: '#115e59',
+    premium: sender.isPremium,
+    photoURL: sender.photoURL,
+  };
+  const receiverConversation: Conversation = {
+    ...conversation,
+    friendId: sender.id,
+  };
+  const cleanMessage = withoutUndefined(message);
+
+  const batch = writeBatch(firestore);
+  batch.set(doc(firestore, usersPath, receiverUserId, 'friends', sender.id), withoutUndefined(senderFriend), { merge: true });
+  batch.set(doc(firestore, usersPath, receiverUserId, 'conversations', conversation.id), withoutUndefined(receiverConversation), { merge: true });
+  batch.set(doc(firestore, usersPath, receiverUserId, 'messages', message.id), cleanMessage, { merge: true });
+  batch.set(doc(firestore, ledgerPath, message.id), cleanMessage, { merge: true });
+  await batch.commit();
 }
 
 export async function updateConversationRetention(userId: string, conversationId: string, retentionId: Conversation['retentionId']) {
